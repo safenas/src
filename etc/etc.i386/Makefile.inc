@@ -1,7 +1,7 @@
 #
 #	etc.i386/Makefile.inc -- i386-specific etc Makefile targets
 #
-#	$Id: Makefile.inc,v 1.1 1995/10/18 08:38:00 deraadt Exp $
+#	$Id: Makefile.inc,v 1.1.1.1 1995/10/18 08:38:00 deraadt Exp $
 
 .ifdef DESTDIR
 snap_md: netbsd-aha netbsd-bt

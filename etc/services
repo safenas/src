@@ -8,7 +8,7 @@
 # are included, only the more common ones.
 #
 #	from: @(#)services	5.8 (Berkeley) 5/9/91
-#	$Id: services,v 1.1 1995/10/18 08:37:57 deraadt Exp $
+#	$Id: services,v 1.1.1.1 1995/10/18 08:37:57 deraadt Exp $
 #
 tcpmux		1/tcp		# TCP port service multiplexer
 echo		7/tcp
