@@ -1,5 +1,5 @@
 /* multi.c -- multiple-column tables (@multitable) for makeinfo.
-   $Id: multi.c,v 1.1.1.5 2006/07/17 16:03:48 espie Exp $
+   $Id: multi.c,v 1.7 2006/07/17 16:12:36 espie Exp $
 
    Copyright (C) 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2004 Free Software
    Foundation, Inc.
@@ -207,7 +207,7 @@ setup_multitable_parameters (void)
       params++;
 
     if (*params == '@') {
-      sscanf (params, "%200s", command);
+      sscanf (params, "%199s", command);
       nchars = strlen (command);
       params += nchars;
       if (strcmp (command, "@hsep") == 0)
@@ -430,8 +430,8 @@ output_multitable_row (void)
 
   /* remove trailing whitespace from each column */
   for (i = 1; i <= last_column; i++) {
-    if (envs[i].output_paragraph_offset)
-      while (cr_or_whitespace (CHAR_AT (envs[i].output_paragraph_offset - 1)))
+      while (envs[i].output_paragraph_offset &&
+             cr_or_whitespace (CHAR_AT (envs[i].output_paragraph_offset - 1)))
         envs[i].output_paragraph_offset--;
 
     if (i == current_env_no)

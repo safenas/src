@@ -1,11 +1,17 @@
+#	$OpenBSD: Makefile,v 1.18 2017/06/12 18:49:34 espie Exp $
 #	from: @(#)Makefile	5.13 (Berkeley) 5/7/91
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:44:43 deraadt Exp $
 
-FILES=	airport ascii birthtoken eqnchar getopt inter.phone man.template \
-	mdoc.template na.phone operator style zipcodes
-NOOBJ=	noobj
+FILES=	airport birthtoken countrycodes \
+	inter.phone license.template mdoc.template mime.types \
+	na.phone scsi_modes usb_hid_usages usb_hid_usages \
+	zipcodes 
 
-all clean cleandir depend lint tags:
+.if (${MACHINE} == "i386") || (${MACHINE} == "amd64") || \
+    (${MACHINE} == "alpha")
+SUBDIR=	pcvtfonts
+.endif
+
+all clean cleandir obj tags: _SUBDIRUSE
 
 realinstall:
 	cd ${.CURDIR}; install -c -o ${BINOWN} -g ${BINGRP} -m 444 ${FILES} \

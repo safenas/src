@@ -1,25 +1,25 @@
-/* crypto/rc4/rc4.c */
+/* $OpenBSD: rc4.c,v 1.12 2024/08/11 13:02:39 jsing Exp $ */
 /* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
  * All rights reserved.
  *
  * This package is an SSL implementation written
  * by Eric Young (eay@cryptsoft.com).
  * The implementation was written so as to conform with Netscapes SSL.
- * 
+ *
  * This library is free for commercial and non-commercial use as long as
  * the following conditions are aheared to.  The following conditions
  * apply to all code found in this distribution, be it the RC4, RSA,
  * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
  * included with this distribution is covered by the same copyright terms
  * except that the holder is Tim Hudson (tjh@cryptsoft.com).
- * 
+ *
  * Copyright remains Eric Young's, and as such any Copyright notices in
  * the code are not to be removed.
  * If this package is used in a product, Eric Young should be given attribution
  * as the author of the parts of the library used.
  * This can be in the form of a textual message at program startup or
  * in documentation (online or textual) provided with the package.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -34,10 +34,10 @@
  *     Eric Young (eay@cryptsoft.com)"
  *    The word 'cryptographic' can be left out if the rouines from the library
  *    being used are not cryptographic related :-).
- * 4. If you include any Windows specific code (or a derivative thereof) from 
+ * 4. If you include any Windows specific code (or a derivative thereof) from
  *    the apps directory (application code) you must include an acknowledgement:
  *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -49,145 +49,257 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- * 
+ *
  * The licence and distribution terms for any publically available version or
  * derivative of this code cannot be changed.  i.e. this code cannot simply be
  * copied and put under another distribution licence
  * [including the GNU Public Licence.]
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <endian.h>
+
 #include <openssl/rc4.h>
-#include <openssl/evp.h>
 
-char *usage[]={
-"usage: rc4 args\n",
-"\n",
-" -in arg         - input file - default stdin\n",
-" -out arg        - output file - default stdout\n",
-" -key key        - password\n",
-NULL
-};
+#include "crypto_arch.h"
 
-int main(int argc, char *argv[])
-	{
-	FILE *in=NULL,*out=NULL;
-	char *infile=NULL,*outfile=NULL,*keystr=NULL;
-	RC4_KEY key;
-	char buf[BUFSIZ];
-	int badops=0,i;
-	char **pp;
-	unsigned char md[MD5_DIGEST_LENGTH];
+/* RC4 as implemented from a posting from
+ * Newsgroups: sci.crypt
+ * From: sterndark@netcom.com (David Sterndark)
+ * Subject: RC4 Algorithm revealed.
+ * Message-ID: <sternCvKL4B.Hyy@netcom.com>
+ * Date: Wed, 14 Sep 1994 06:35:31 GMT
+ */
 
-	argc--;
-	argv++;
-	while (argc >= 1)
-		{
-		if 	(strcmp(*argv,"-in") == 0)
-			{
-			if (--argc < 1) goto bad;
-			infile= *(++argv);
+#ifdef HAVE_RC4_INTERNAL
+void rc4_internal(RC4_KEY *key, size_t len, const unsigned char *indata,
+    unsigned char *outdata);
+
+#else
+static void
+rc4_internal(RC4_KEY *key, size_t len, const unsigned char *indata,
+    unsigned char *outdata)
+{
+	RC4_INT *d;
+	RC4_INT x, y,tx, ty;
+	size_t i;
+
+	x = key->x;
+	y = key->y;
+	d = key->data;
+
+#if defined(RC4_CHUNK)
+	/*
+	 * The original reason for implementing this(*) was the fact that
+	 * pre-21164a Alpha CPUs don't have byte load/store instructions
+	 * and e.g. a byte store has to be done with 64-bit load, shift,
+	 * and, or and finally 64-bit store. Peaking data and operating
+	 * at natural word size made it possible to reduce amount of
+	 * instructions as well as to perform early read-ahead without
+	 * suffering from RAW (read-after-write) hazard. This resulted
+	 * in ~40%(**) performance improvement on 21064 box with gcc.
+	 * But it's not only Alpha users who win here:-) Thanks to the
+	 * early-n-wide read-ahead this implementation also exhibits
+	 * >40% speed-up on SPARC and 20-30% on 64-bit MIPS (depending
+	 * on sizeof(RC4_INT)).
+	 *
+	 * (*)	"this" means code which recognizes the case when input
+	 *	and output pointers appear to be aligned at natural CPU
+	 *	word boundary
+	 * (**)	i.e. according to 'apps/openssl speed rc4' benchmark,
+	 *	crypto/rc4/rc4speed.c exhibits almost 70% speed-up...
+	 *
+	 * Caveats.
+	 *
+	 * - RC4_CHUNK="unsigned long long" should be a #1 choice for
+	 *   UltraSPARC. Unfortunately gcc generates very slow code
+	 *   (2.5-3 times slower than one generated by Sun's WorkShop
+	 *   C) and therefore gcc (at least 2.95 and earlier) should
+	 *   always be told that RC4_CHUNK="unsigned long".
+	 *
+	 *					<appro@fy.chalmers.se>
+	 */
+
+# define RC4_STEP	( \
+			x=(x+1) &0xff,	\
+			tx=d[x],	\
+			y=(tx+y)&0xff,	\
+			ty=d[y],	\
+			d[y]=tx,	\
+			d[x]=ty,	\
+			(RC4_CHUNK)d[(tx+ty)&0xff]\
+			)
+
+	if ((((size_t)indata & (sizeof(RC4_CHUNK) - 1)) |
+	    ((size_t)outdata & (sizeof(RC4_CHUNK) - 1))) == 0 ) {
+		RC4_CHUNK ichunk, otp;
+
+		/*
+		 * I reckon we can afford to implement both endian
+		 * cases and to decide which way to take at run-time
+		 * because the machine code appears to be very compact
+		 * and redundant 1-2KB is perfectly tolerable (i.e.
+		 * in case the compiler fails to eliminate it:-). By
+		 * suggestion from Terrel Larson <terr@terralogic.net>.
+		 *
+		 * Special notes.
+		 *
+		 * - compilers (those I've tried) don't seem to have
+		 *   problems eliminating either the operators guarded
+		 *   by "if (sizeof(RC4_CHUNK)==8)" or the condition
+		 *   expressions themselves so I've got 'em to replace
+		 *   corresponding #ifdefs from the previous version;
+		 * - I chose to let the redundant switch cases when
+		 *   sizeof(RC4_CHUNK)!=8 be (were also #ifdefed
+		 *   before);
+		 * - in case you wonder "&(sizeof(RC4_CHUNK)*8-1)" in
+		 *   [LB]ESHFT guards against "shift is out of range"
+		 *   warnings when sizeof(RC4_CHUNK)!=8
+		 *
+		 *			<appro@fy.chalmers.se>
+		 */
+#if BYTE_ORDER == BIG_ENDIAN
+# define BESHFT(c)	(((sizeof(RC4_CHUNK)-(c)-1)*8)&(sizeof(RC4_CHUNK)*8-1))
+		for (; len & (0 - sizeof(RC4_CHUNK)); len -= sizeof(RC4_CHUNK)) {
+			ichunk  = *(RC4_CHUNK *)indata;
+			otp = RC4_STEP << BESHFT(0);
+			otp |= RC4_STEP << BESHFT(1);
+			otp |= RC4_STEP << BESHFT(2);
+			otp |= RC4_STEP << BESHFT(3);
+			if (sizeof(RC4_CHUNK) == 8) {
+				otp |= RC4_STEP << BESHFT(4);
+				otp |= RC4_STEP << BESHFT(5);
+				otp |= RC4_STEP << BESHFT(6);
+				otp |= RC4_STEP << BESHFT(7);
 			}
-		else if (strcmp(*argv,"-out") == 0)
-			{
-			if (--argc < 1) goto bad;
-			outfile= *(++argv);
-			}
-		else if (strcmp(*argv,"-key") == 0)
-			{
-			if (--argc < 1) goto bad;
-			keystr= *(++argv);
-			}
-		else
-			{
-			fprintf(stderr,"unknown option %s\n",*argv);
-			badops=1;
-			break;
-			}
-		argc--;
-		argv++;
+			*(RC4_CHUNK *)outdata = otp^ichunk;
+			indata += sizeof(RC4_CHUNK);
+			outdata += sizeof(RC4_CHUNK);
 		}
-
-	if (badops)
-		{
-bad:
-		for (pp=usage; (*pp != NULL); pp++)
-			fprintf(stderr,"%s",*pp);
-		exit(1);
-		}
-
-	if (infile == NULL)
-		in=stdin;
-	else
-		{
-		in=fopen(infile,"r");
-		if (in == NULL)
-			{
-			perror("open");
-			exit(1);
+#else
+# define LESHFT(c)	(((c)*8)&(sizeof(RC4_CHUNK)*8-1))
+		for (; len & (0 - sizeof(RC4_CHUNK)); len -= sizeof(RC4_CHUNK)) {
+			ichunk = *(RC4_CHUNK *)indata;
+			otp = RC4_STEP;
+			otp |= RC4_STEP << 8;
+			otp |= RC4_STEP << 16;
+			otp |= RC4_STEP << 24;
+			if (sizeof(RC4_CHUNK) == 8) {
+				otp |= RC4_STEP << LESHFT(4);
+				otp |= RC4_STEP << LESHFT(5);
+				otp |= RC4_STEP << LESHFT(6);
+				otp |= RC4_STEP << LESHFT(7);
 			}
-
+			*(RC4_CHUNK *)outdata = otp ^ ichunk;
+			indata += sizeof(RC4_CHUNK);
+			outdata += sizeof(RC4_CHUNK);
 		}
-	if (outfile == NULL)
-		out=stdout;
-	else
-		{
-		out=fopen(outfile,"w");
-		if (out == NULL)
-			{
-			perror("open");
-			exit(1);
-			}
-		}
-		
-#ifdef OPENSSL_SYS_MSDOS
-	/* This should set the file to binary mode. */
-	{
-#include <fcntl.h>
-	setmode(fileno(in),O_BINARY);
-	setmode(fileno(out),O_BINARY);
+#endif
 	}
 #endif
+#define RC4_LOOP(in,out) \
+		x=((x+1)&0xff); \
+		tx=d[x]; \
+		y=(tx+y)&0xff; \
+		d[x]=ty=d[y]; \
+		d[y]=tx; \
+		(out) = d[(tx+ty)&0xff]^ (in);
 
-	if (keystr == NULL)
-		{ /* get key */
-		i=EVP_read_pw_string(buf,BUFSIZ,"Enter RC4 password:",0);
-		if (i != 0)
-			{
-			OPENSSL_cleanse(buf,BUFSIZ);
-			fprintf(stderr,"bad password read\n");
-			exit(1);
-			}
-		keystr=buf;
-		}
+	i = len >> 3;
+	if (i) {
+		for (;;) {
+			RC4_LOOP(indata[0], outdata[0]);
+			RC4_LOOP(indata[1], outdata[1]);
+			RC4_LOOP(indata[2], outdata[2]);
+			RC4_LOOP(indata[3], outdata[3]);
+			RC4_LOOP(indata[4], outdata[4]);
+			RC4_LOOP(indata[5], outdata[5]);
+			RC4_LOOP(indata[6], outdata[6]);
+			RC4_LOOP(indata[7], outdata[7]);
 
-	EVP_Digest((unsigned char *)keystr,strlen(keystr),md,NULL,EVP_md5(),NULL);
-	OPENSSL_cleanse(keystr,strlen(keystr));
-	RC4_set_key(&key,MD5_DIGEST_LENGTH,md);
-	
-	for(;;)
-		{
-		i=fread(buf,1,BUFSIZ,in);
-		if (i == 0) break;
-		if (i < 0)
-			{
-			perror("read");
-			exit(1);
-			}
-		RC4(&key,(unsigned int)i,(unsigned char *)buf,
-			(unsigned char *)buf);
-		i=fwrite(buf,(unsigned int)i,1,out);
-		if (i != 1)
-			{
-			perror("write");
-			exit(1);
-			}
+			indata += 8;
+			outdata += 8;
+
+			if (--i == 0)
+				break;
 		}
-	fclose(out);
-	fclose(in);
-	exit(0);
-	return(1);
 	}
+	i = len&0x07;
+	if (i) {
+		for (;;) {
+			RC4_LOOP(indata[0], outdata[0]);
+			if (--i == 0)
+				break;
+			RC4_LOOP(indata[1], outdata[1]);
+			if (--i == 0)
+				break;
+			RC4_LOOP(indata[2], outdata[2]);
+			if (--i == 0)
+				break;
+			RC4_LOOP(indata[3], outdata[3]);
+			if (--i == 0)
+				break;
+			RC4_LOOP(indata[4], outdata[4]);
+			if (--i == 0)
+				break;
+			RC4_LOOP(indata[5], outdata[5]);
+			if (--i == 0)
+				break;
+			RC4_LOOP(indata[6], outdata[6]);
+			if (--i == 0)
+				break;
+		}
+	}
+	key->x = x;
+	key->y = y;
+}
+#endif
 
+#ifdef HAVE_RC4_SET_KEY_INTERNAL
+void rc4_set_key_internal(RC4_KEY *key, int len, const unsigned char *data);
+
+#else
+static inline void
+rc4_set_key_internal(RC4_KEY *key, int len, const unsigned char *data)
+{
+	RC4_INT tmp;
+	int id1, id2;
+	RC4_INT *d;
+	unsigned int i;
+
+	d = &(key->data[0]);
+	key->x = 0;
+	key->y = 0;
+	id1 = id2 = 0;
+
+#define SK_LOOP(d,n) { \
+		tmp=d[(n)]; \
+		id2 = (data[id1] + tmp + id2) & 0xff; \
+		if (++id1 == len) id1=0; \
+		d[(n)]=d[id2]; \
+		d[id2]=tmp; }
+
+	for (i = 0; i < 256; i++)
+		d[i] = i;
+	for (i = 0; i < 256; i += 4) {
+		SK_LOOP(d, i + 0);
+		SK_LOOP(d, i + 1);
+		SK_LOOP(d, i + 2);
+		SK_LOOP(d, i + 3);
+	}
+}
+#endif
+
+void
+RC4(RC4_KEY *key, size_t len, const unsigned char *indata,
+    unsigned char *outdata)
+{
+	rc4_internal(key, len, indata, outdata);
+}
+LCRYPTO_ALIAS(RC4);
+
+void
+RC4_set_key(RC4_KEY *key, int len, const unsigned char *data)
+{
+	rc4_set_key_internal(key, len, data);
+}
+LCRYPTO_ALIAS(RC4_set_key);

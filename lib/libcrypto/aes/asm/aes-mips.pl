@@ -49,6 +49,12 @@
 #
 $flavour = shift; # supported flavours are o32,n32,64,nubi32,nubi64
 
+if ($flavour =~ /64/i) {
+	$LA="dla";
+} else {
+	$LA="la";
+}
+
 if ($flavour =~ /64|n32/i) {
 	$PTR_ADD="dadd";	# incidentally works even on n32
 	$PTR_SUB="dsub";	# incidentally works even on n32
@@ -85,10 +91,6 @@ my ($MSB,$LSB)=(0,3);	# automatically converted to little-endian
 
 $code.=<<___;
 .text
-#ifdef OPENSSL_FIPSCANISTER
-# include <openssl/fipssyms.h>
-#endif
-
 #if !defined(__vxworks) || defined(__pic__)
 .option	pic2
 #endif
@@ -104,7 +106,7 @@ my ($i0,$i1,$i2,$i3)=($at,$t0,$t1,$t2);
 my ($t0,$t1,$t2,$t3,$t4,$t5,$t6,$t7,$t8,$t9,$t10,$t11) = map("\$$_",(12..23));
 my ($key0,$cnt)=($gp,$fp);
 
-# instuction ordering is "stolen" from output from MIPSpro assembler
+# instruction ordering is "stolen" from output from MIPSpro assembler
 # invoked with -mips3 -O3 arguments...
 $code.=<<___;
 .align	5
@@ -353,9 +355,9 @@ _mips_AES_encrypt:
 .end	_mips_AES_encrypt
 
 .align	5
-.globl	AES_encrypt
-.ent	AES_encrypt
-AES_encrypt:
+.globl	aes_encrypt_internal
+.ent	aes_encrypt_internal
+aes_encrypt_internal:
 	.frame	$sp,$FRAMESIZE,$ra
 	.mask	$SAVED_REGS_MASK,-$SZREG
 	.set	noreorder
@@ -385,11 +387,11 @@ $code.=<<___ if ($flavour =~ /nubi/i);	# optimize non-nubi prologue
 ___
 $code.=<<___ if ($flavour !~ /o32/i);	# non-o32 PIC-ification
 	.cplocal	$Tbl
-	.cpsetup	$pf,$zero,AES_encrypt
+	.cpsetup	$pf,$zero,aes_encrypt_internal
 ___
 $code.=<<___;
 	.set	reorder
-	la	$Tbl,AES_Te		# PIC-ified 'load address'
+	$LA	$Tbl,AES_Te		# PIC-ified 'load address'
 
 	lwl	$s0,0+$MSB($inp)
 	lwl	$s1,4+$MSB($inp)
@@ -433,7 +435,7 @@ ___
 $code.=<<___;
 	jr	$ra
 	$PTR_ADD $sp,$FRAMESIZE
-.end	AES_encrypt
+.end	aes_encrypt_internal
 ___
 
 $code.=<<___;
@@ -689,9 +691,9 @@ _mips_AES_decrypt:
 .end	_mips_AES_decrypt
 
 .align	5
-.globl	AES_decrypt
-.ent	AES_decrypt
-AES_decrypt:
+.globl	aes_decrypt_internal
+.ent	aes_decrypt_internal
+aes_decrypt_internal:
 	.frame	$sp,$FRAMESIZE,$ra
 	.mask	$SAVED_REGS_MASK,-$SZREG
 	.set	noreorder
@@ -721,11 +723,11 @@ $code.=<<___ if ($flavour =~ /nubi/i);	# optimize non-nubi prologue
 ___
 $code.=<<___ if ($flavour !~ /o32/i);	# non-o32 PIC-ification
 	.cplocal	$Tbl
-	.cpsetup	$pf,$zero,AES_decrypt
+	.cpsetup	$pf,$zero,aes_decrypt_internal
 ___
 $code.=<<___;
 	.set	reorder
-	la	$Tbl,AES_Td		# PIC-ified 'load address'
+	$LA	$Tbl,AES_Td		# PIC-ified 'load address'
 
 	lwl	$s0,0+$MSB($inp)
 	lwl	$s1,4+$MSB($inp)
@@ -769,7 +771,7 @@ ___
 $code.=<<___;
 	jr	$ra
 	$PTR_ADD $sp,$FRAMESIZE
-.end	AES_decrypt
+.end	aes_decrypt_internal
 ___
 }}}
 
@@ -1036,9 +1038,9 @@ _mips_AES_set_encrypt_key:
 	nop
 .end	_mips_AES_set_encrypt_key
 
-.globl	private_AES_set_encrypt_key
-.ent	private_AES_set_encrypt_key
-private_AES_set_encrypt_key:
+.globl	aes_set_encrypt_key_internal
+.ent	aes_set_encrypt_key_internal
+aes_set_encrypt_key_internal:
 	.frame	$sp,$FRAMESIZE,$ra
 	.mask	$SAVED_REGS_MASK,-$SZREG
 	.set	noreorder
@@ -1060,11 +1062,11 @@ $code.=<<___ if ($flavour =~ /nubi/i);	# optimize non-nubi prologue
 ___
 $code.=<<___ if ($flavour !~ /o32/i);	# non-o32 PIC-ification
 	.cplocal	$Tbl
-	.cpsetup	$pf,$zero,private_AES_set_encrypt_key
+	.cpsetup	$pf,$zero,aes_set_encrypt_key_internal
 ___
 $code.=<<___;
 	.set	reorder
-	la	$Tbl,AES_Te		# PIC-ified 'load address'
+	$LA	$Tbl,AES_Te		# PIC-ified 'load address'
 
 	bal	_mips_AES_set_encrypt_key
 
@@ -1083,7 +1085,7 @@ ___
 $code.=<<___;
 	jr	$ra
 	$PTR_ADD $sp,$FRAMESIZE
-.end	private_AES_set_encrypt_key
+.end	aes_set_encrypt_key_internal
 ___
 
 my ($head,$tail)=($inp,$bits);
@@ -1091,9 +1093,9 @@ my ($tp1,$tp2,$tp4,$tp8,$tp9,$tpb,$tpd,$tpe)=($a4,$a5,$a6,$a7,$s0,$s1,$s2,$s3);
 my ($m,$x80808080,$x7f7f7f7f,$x1b1b1b1b)=($at,$t0,$t1,$t2);
 $code.=<<___;
 .align	5
-.globl	private_AES_set_decrypt_key
-.ent	private_AES_set_decrypt_key
-private_AES_set_decrypt_key:
+.globl	aes_set_decrypt_key_internal
+.ent	aes_set_decrypt_key_internal
+aes_set_decrypt_key_internal:
 	.frame	$sp,$FRAMESIZE,$ra
 	.mask	$SAVED_REGS_MASK,-$SZREG
 	.set	noreorder
@@ -1115,11 +1117,11 @@ $code.=<<___ if ($flavour =~ /nubi/i);	# optimize non-nubi prologue
 ___
 $code.=<<___ if ($flavour !~ /o32/i);	# non-o32 PIC-ification
 	.cplocal	$Tbl
-	.cpsetup	$pf,$zero,private_AES_set_decrypt_key
+	.cpsetup	$pf,$zero,aes_set_decrypt_key_internal
 ___
 $code.=<<___;
 	.set	reorder
-	la	$Tbl,AES_Te		# PIC-ified 'load address'
+	$LA	$Tbl,AES_Te		# PIC-ified 'load address'
 
 	bal	_mips_AES_set_encrypt_key
 
@@ -1226,7 +1228,7 @@ ___
 $code.=<<___;
 	jr	$ra
 	$PTR_ADD $sp,$FRAMESIZE
-.end	private_AES_set_decrypt_key
+.end	aes_set_decrypt_key_internal
 ___
 }}}
 

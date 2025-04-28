@@ -21340,7 +21340,7 @@ fi
 else $as_nop
 
 		  # without EVP_PKEY_fromdata, older openssl, check for support
-		  ac_fn_c_check_func "$LINENO" "ECDSA_sign" "ac_cv_func_ECDSA_sign"
+	      ac_fn_c_check_func "$LINENO" "ECDSA_sign" "ac_cv_func_ECDSA_sign"
 if test "x$ac_cv_func_ECDSA_sign" = xyes
 then :
 
@@ -21348,7 +21348,7 @@ else $as_nop
   as_fn_error $? "OpenSSL does not support ECDSA: please upgrade or rerun with --disable-ecdsa" "$LINENO" 5
 fi
 
-		  ac_fn_c_check_func "$LINENO" "SHA384_Init" "ac_cv_func_SHA384_Init"
+	      ac_fn_c_check_func "$LINENO" "SHA384_Init" "ac_cv_func_SHA384_Init"
 if test "x$ac_cv_func_SHA384_Init" = xyes
 then :
 
@@ -24296,36 +24296,36 @@ fi
 	echo "$PROTOBUFC_PKG_ERRORS" >&5
 
 
-                            # pkg-config failed; try falling back to known values
-                            # workaround for protobuf-c includes at old dir before protobuf-c-1.0.0
-                            if test -f /usr/include/google/protobuf-c/protobuf-c.h; then
-                                CFLAGS="$CFLAGS -I/usr/include/google"
-                            else
-                                if test -f /usr/local/include/google/protobuf-c/protobuf-c.h; then
-                                    CFLAGS="$CFLAGS -I/usr/local/include/google"
-                                    LDFLAGS="$LDFLAGS -L/usr/local/lib"
+                                # pkg-config failed; try falling back to known values
+                                # workaround for protobuf-c includes at old dir before protobuf-c-1.0.0
+                                if test -f /usr/include/google/protobuf-c/protobuf-c.h; then
+                                    CFLAGS="$CFLAGS -I/usr/include/google"
                                 else
-                                    as_fn_error $? "The protobuf-c package was not found with pkg-config. Please install protobuf-c!" "$LINENO" 5
+                                    if test -f /usr/local/include/google/protobuf-c/protobuf-c.h; then
+                                        CFLAGS="$CFLAGS -I/usr/local/include/google"
+                                        LDFLAGS="$LDFLAGS -L/usr/local/lib"
+                                    else
+                                        as_fn_error $? "The protobuf-c package was not found with pkg-config. Please install protobuf-c!" "$LINENO" 5
+                                    fi
                                 fi
-                            fi
 
 
 elif test $pkg_failed = untried; then
      	{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: no" >&5
 printf "%s\n" "no" >&6; }
 
-                            # pkg-config failed; try falling back to known values
-                            # workaround for protobuf-c includes at old dir before protobuf-c-1.0.0
-                            if test -f /usr/include/google/protobuf-c/protobuf-c.h; then
-                                CFLAGS="$CFLAGS -I/usr/include/google"
-                            else
-                                if test -f /usr/local/include/google/protobuf-c/protobuf-c.h; then
-                                    CFLAGS="$CFLAGS -I/usr/local/include/google"
-                                    LDFLAGS="$LDFLAGS -L/usr/local/lib"
+                                # pkg-config failed; try falling back to known values
+                                # workaround for protobuf-c includes at old dir before protobuf-c-1.0.0
+                                if test -f /usr/include/google/protobuf-c/protobuf-c.h; then
+                                    CFLAGS="$CFLAGS -I/usr/include/google"
                                 else
-                                    as_fn_error $? "The protobuf-c package was not found with pkg-config. Please install protobuf-c!" "$LINENO" 5
+                                    if test -f /usr/local/include/google/protobuf-c/protobuf-c.h; then
+                                        CFLAGS="$CFLAGS -I/usr/local/include/google"
+                                        LDFLAGS="$LDFLAGS -L/usr/local/lib"
+                                    else
+                                        as_fn_error $? "The protobuf-c package was not found with pkg-config. Please install protobuf-c!" "$LINENO" 5
+                                    fi
                                 fi
-                            fi
 
 
 else
@@ -24334,20 +24334,20 @@ else
         { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: yes" >&5
 printf "%s\n" "yes" >&6; }
 
-                            CFLAGS="$CFLAGS $PROTOBUFC_CFLAGS"
-                            LIBS="$LIBS $PROTOBUFC_LIBS"
+                                CFLAGS="$CFLAGS $PROTOBUFC_CFLAGS"
+                                LIBS="$LIBS $PROTOBUFC_LIBS"
 
 fi
                 else
-                    # workaround for protobuf-c includes at old dir before protobuf-c-1.0.0
-                    if test -f /usr/include/google/protobuf-c/protobuf-c.h; then
-                        CFLAGS="$CFLAGS -I/usr/include/google"
-                    else
-                        if test -f /usr/local/include/google/protobuf-c/protobuf-c.h; then
-                            CFLAGS="$CFLAGS -I/usr/local/include/google"
-                            LDFLAGS="$LDFLAGS -L/usr/local/lib"
+                        # workaround for protobuf-c includes at old dir before protobuf-c-1.0.0
+                        if test -f /usr/include/google/protobuf-c/protobuf-c.h; then
+                            CFLAGS="$CFLAGS -I/usr/include/google"
+                        else
+                            if test -f /usr/local/include/google/protobuf-c/protobuf-c.h; then
+                                CFLAGS="$CFLAGS -I/usr/local/include/google"
+                                LDFLAGS="$LDFLAGS -L/usr/local/lib"
+                            fi
                         fi
-                    fi
                 fi
 
 
@@ -24761,7 +24761,7 @@ then :
 
 else $as_nop
 
-		    # mnl
+		# mnl
 
 # Check whether --with-libmnl was given.
 if test ${with_libmnl+y}
@@ -24771,13 +24771,13 @@ else $as_nop
    withval="yes"
 fi
 
-		    found_libmnl="no"
-		    { printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for libmnl" >&5
+		found_libmnl="no"
+		{ printf "%s\n" "$as_me:${as_lineno-$LINENO}: checking for libmnl" >&5
 printf %s "checking for libmnl... " >&6; }
-		    if test x_$withval = x_ -o x_$withval = x_yes; then
+		if test x_$withval = x_ -o x_$withval = x_yes; then
 			withval="/usr/local /opt/local /usr/lib /usr/pkg /usr/sfw /usr"
-		    fi
-		    for dir in $withval ; do
+		fi
+		for dir in $withval ; do
 			if test -f "$dir/include/libmnl/libmnl.h" -o -f "$dir/include/libmnl/libmnl/libmnl.h"; then
 				found_libmnl="yes"
 								extralibmnl=""
@@ -24795,10 +24795,10 @@ printf "%s\n" "found in $dir" >&6; }
 				LIBS="$LIBS -lmnl"
 				break;
 			fi
-		    done
-		    if test x_$found_libmnl != x_yes; then
-			  as_fn_error $? "Could not find libmnl, libmnl.h" "$LINENO" 5
-		    fi
+		done
+		if test x_$found_libmnl != x_yes; then
+			as_fn_error $? "Could not find libmnl, libmnl.h" "$LINENO" 5
+		fi
 
 fi
 
@@ -25002,7 +25002,7 @@ version=1.22.0
 date=`date +'%b %e, %Y'`
 
 
-ac_config_files="$ac_config_files Makefile doc/example.conf doc/libunbound.3 doc/unbound.8 doc/unbound-anchor.8 doc/unbound-checkconf.8 doc/unbound.conf.5 doc/unbound-control.8 doc/unbound-host.1 smallapp/unbound-control-setup.sh dnstap/dnstap_config.h dnscrypt/dnscrypt_config.h contrib/libunbound.pc contrib/unbound.socket contrib/unbound.service contrib/unbound_portable.service"
+ac_config_files="$ac_config_files Makefile doc/example.conf doc/libunbound.3 doc/unbound.8 doc/unbound-anchor.8 doc/unbound-checkconf.8 doc/unbound.conf.5 doc/unbound-control.8 doc/unbound-host.1 smallapp/unbound-control-setup.sh dnstap/dnstap_config.h dnscrypt/dnscrypt_config.h"
 
 ac_config_headers="$ac_config_headers config.h"
 
@@ -26000,10 +26000,6 @@ do
     "smallapp/unbound-control-setup.sh") CONFIG_FILES="$CONFIG_FILES smallapp/unbound-control-setup.sh" ;;
     "dnstap/dnstap_config.h") CONFIG_FILES="$CONFIG_FILES dnstap/dnstap_config.h" ;;
     "dnscrypt/dnscrypt_config.h") CONFIG_FILES="$CONFIG_FILES dnscrypt/dnscrypt_config.h" ;;
-    "contrib/libunbound.pc") CONFIG_FILES="$CONFIG_FILES contrib/libunbound.pc" ;;
-    "contrib/unbound.socket") CONFIG_FILES="$CONFIG_FILES contrib/unbound.socket" ;;
-    "contrib/unbound.service") CONFIG_FILES="$CONFIG_FILES contrib/unbound.service" ;;
-    "contrib/unbound_portable.service") CONFIG_FILES="$CONFIG_FILES contrib/unbound_portable.service" ;;
     "config.h") CONFIG_HEADERS="$CONFIG_HEADERS config.h" ;;
 
   *) as_fn_error $? "invalid argument: \`$ac_config_target'" "$LINENO" 5;;
@@ -27143,5 +27139,4 @@ if test -n "$ac_unrecognized_opts" && test "$enable_option_checking" != no; then
   { printf "%s\n" "$as_me:${as_lineno-$LINENO}: WARNING: unrecognized options: $ac_unrecognized_opts" >&5
 printf "%s\n" "$as_me: WARNING: unrecognized options: $ac_unrecognized_opts" >&2;}
 fi
-
 

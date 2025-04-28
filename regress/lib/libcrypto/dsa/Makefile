@@ -1,13 +1,9 @@
-#	$OpenBSD$
+#	$OpenBSD: Makefile,v 1.6 2024/03/30 00:32:13 jsing Exp $
 
-PROG=	dsatest
-LDADD=	-lcrypto
-DPADD=	${LIBCRYPTO}
-
-REGRESS_TARGETS=regress-dsatest
-
-regress-dsatest:	${PROG}
-	./${PROG}
-	./${PROG} -app2_1
+PROG=		dsatest
+LDADD=		-lcrypto
+DPADD=		${LIBCRYPTO}
+WARNINGS=	Yes
+CFLAGS+=	-DLIBRESSL_INTERNAL -Werror
 
 .include <bsd.regress.mk>

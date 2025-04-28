@@ -1,4 +1,1 @@
-#	$Id: Makefile.inc,v 1.1.1.1 1996/12/21 20:42:21 rahnds Exp $
-
-KMINCLUDES= arch/ppc/SYS.h
-KMSRCS=
+#	$OpenBSD: Makefile.inc,v 1.5 2016/05/07 19:05:22 guenther Exp $

@@ -635,7 +635,7 @@ EOF
 		#include <sys/systemcfg.h>
 
 		int
-		main ()
+		main()
 			{
 			if (!__power_pc())
 				exit(1);

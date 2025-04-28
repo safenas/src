@@ -1,9 +1,13 @@
 #	from: @(#)Makefile	5.7 (Berkeley) 4/1/91
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:43:14 deraadt Exp $
+#	$OpenBSD: Makefile,v 1.67 2020/09/12 15:06:12 martijn Exp $
 
-SUBDIR=	atrun comsat fingerd ftpd getNAME getty identd lfs_cleanerd \
-	mail.local makekey makewhatis rexecd rlogind rshd rpc.rquotad \
-	rpc.rstatd rpc.rusersd rpc.rwalld rpc.sprayd talkd telnetd \
-	tftpd uucpd
+.include <bsd.own.mk>
+
+SUBDIR= comsat fingerd ftpd getty ld.so lockspool login_chpass \
+	login_lchpass login_ldap login_passwd login_radius login_reject \
+	login_skey login_token login_yubikey mail.local \
+	reorder_kernel \
+	rpc.rquotad rpc.rstatd rpc.rusersd rpc.rwalld \
+	security snmpd spamd spamd-setup spamlogd talkd tradcpp
 
 .include <bsd.subdir.mk>

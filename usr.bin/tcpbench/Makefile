@@ -1,24 +1,7 @@
-MAN=	tcpbench.1
+#	$OpenBSD: Makefile,v 1.10 2022/08/15 09:06:54 claudio Exp $
 
-CDIAGFLAGS=     -Wall
-#CDIAGFLAGS+=   -Werror
-CDIAGFLAGS+=    -Wpointer-arith
-CDIAGFLAGS+=    -Wno-uninitialized
-CDIAGFLAGS+=    -Wstrict-prototypes
-CDIAGFLAGS+=    -Wmissing-prototypes
-CDIAGFLAGS+=    -Wunused
-CDIAGFLAGS+=    -Wsign-compare
-CDIAGFLAGS+=    -Wbounded
-CDIAGFLAGS+=    -Wshadow
-
-#DEBUG=-g
-
-PROG=tcpbench
-
-LDADD=-lkvm
-
-#BINGRP= kmem
-#BINMODE=2555
+PROG=	tcpbench
+LDADD=	-lm -levent -ltls -lcrypto
+DPADD=	${LIBM} ${LIBEVENT} ${LIBTLS} ${LIBCRYPTO}
 
 .include <bsd.prog.mk>
-

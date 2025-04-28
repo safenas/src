@@ -1,68 +1,51 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: version.c,v 1.25 2007/05/02 16:26:50 xsa Exp $	*/
 /*
  * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
- * All rights reserved. 
+ * Copyright (c) 2006 Xavier Santolaria <xsa@openbsd.org>
  *
- * Redistribution and use in source and binary forms, with or without 
- * modification, are permitted provided that the following conditions 
- * are met: 
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
  *
- * 1. Redistributions of source code must retain the above copyright 
- *    notice, this list of conditions and the following disclaimer. 
- * 2. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission. 
- *
- * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
- * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
- * THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL  DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/types.h>
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-#include <sysexits.h>
-
 #include "cvs.h"
+#include "remote.h"
 
-
-
-extern struct cvsroot *cvs_root;
-
-
+struct cvs_cmd cvs_cmd_version = {
+	CVS_OP_VERSION, 0, "version",
+	{ "ve", "ver" },
+	"Show current CVS version(s)",
+	"",
+	"",
+	NULL,
+	cvs_version
+};
 
 int
 cvs_version(int argc, char **argv)
 {
 	if (argc > 1)
-		return (EX_USAGE);
+		fatal("version does not take any extra arguments");
 
-	cvs_root = cvsroot_get(".");
+	if (current_cvsroot != NULL && cvsroot_is_remote())
+		cvs_printf("Client: ");
 
-	if ((cvs_root) && (cvs_root->cr_method != CVS_METHOD_LOCAL))
-		printf("Client: ");
+	cvs_printf("%s\n", CVS_VERSION);
 
-	printf("%s\n", CVS_VERSION);
-
-
-	if ((cvs_root) && (cvs_root->cr_method != CVS_METHOD_LOCAL))
-		if (cvs_client_connect() < 0)
-			return (1);
-
-	if ((cvs_root) && (cvs_root->cr_method != CVS_METHOD_LOCAL)) {
-		printf("Server: ");
-		cvs_client_sendreq(CVS_REQ_VERSION, NULL, 1);
-		cvs_client_disconnect();
+	if (current_cvsroot != NULL && cvsroot_is_remote()) {
+		cvs_client_connect_to_server();
+		cvs_client_send_request("version");
+		/* XXX: better way to handle server response? */
+		cvs_printf("Server: ");
+		cvs_client_get_responses();
 	}
 
 	return (0);

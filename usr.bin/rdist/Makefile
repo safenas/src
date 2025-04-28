@@ -1,15 +1,10 @@
-#	from: @(#)Makefile	5.11 (Berkeley) 3/12/91
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:45:58 deraadt Exp $
+#	$OpenBSD: Makefile,v 1.20 2017/07/09 14:04:50 espie Exp $
+
 
 PROG=	rdist
-CFLAGS+=-I${.CURDIR}
-SRCS=	docmd.c expand.c lookup.c main.c server.c
-OBJS+=	gram.o
-BINOWN=	root
-BINMODE=4555
-CLEANFILES=y.tab.h
-
-LDADD=	-lcompat
-DPADD=	${LIBCOMPAT}
+CFLAGS+=-I. -I${.CURDIR}
+SRCS=	gram.y child.c client.c common.c distopt.c docmd.c expand.c \
+	isexec.c lookup.c message.c rdist.c
+WARNINGS=yes
 
 .include <bsd.prog.mk>

@@ -1,5 +1,4 @@
-/*	$NetBSD: scandir.c,v 1.6 1995/02/25 08:51:42 cgd Exp $	*/
-
+/*	$OpenBSD: scandir.c,v 1.22 2024/04/14 11:21:08 florian Exp $ */
 /*
  * Copyright (c) 1983, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -12,11 +11,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -33,14 +28,6 @@
  * SUCH DAMAGE.
  */
 
-#if defined(LIBC_SCCS) && !defined(lint)
-#if 0
-static char sccsid[] = "@(#)scandir.c	8.3 (Berkeley) 1/2/94";
-#else
-static char rcsid[] = "$NetBSD: scandir.c,v 1.6 1995/02/25 08:51:42 cgd Exp $";
-#endif
-#endif /* LIBC_SCCS and not lint */
-
 /*
  * Scan the directory dirname calling select to make a list of selected
  * directory entries then sort using qsort and compare routine dcomp.
@@ -51,8 +38,15 @@ static char rcsid[] = "$NetBSD: scandir.c,v 1.6 1995/02/25 08:51:42 cgd Exp $";
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include "telldir.h"
+
+#define MAXIMUM(a, b)	(((a) > (b)) ? (a) : (b))
 
 /*
  * The DIRSIZ macro is the minimum record length which will hold the directory
@@ -65,77 +59,123 @@ static char rcsid[] = "$NetBSD: scandir.c,v 1.6 1995/02/25 08:51:42 cgd Exp $";
 	((sizeof(struct dirent) - sizeof(dp)->d_name) +			\
 	    (((dp)->d_namlen + 1 + 3) &~ 3))
 
-int
-scandir(dirname, namelist, select, dcomp)
-	const char *dirname;
-	struct dirent ***namelist;
-	int (*select) __P((struct dirent *));
-	int (*dcomp) __P((const void *, const void *));
+static int
+scandir_dirp(DIR *dirp, struct dirent ***namelist,
+    int (*select)(const struct dirent *),
+    int (*dcomp)(const struct dirent **, const struct dirent **))
 {
-	register struct dirent *d, *p, **names;
-	register size_t nitems;
+	struct dirent *d, *p, **names = NULL;
+	size_t nitems = 0;
 	struct stat stb;
 	long arraysz;
-	DIR *dirp;
 
-	if ((dirp = opendir(dirname)) == NULL)
-		return(-1);
-	if (fstat(dirp->dd_fd, &stb) < 0)
-		return(-1);
+	if (fstat(dirp->dd_fd, &stb) == -1)
+		goto fail;
 
 	/*
 	 * estimate the array size by taking the size of the directory file
-	 * and dividing it by a multiple of the minimum size entry. 
+	 * and dividing it by a multiple of the minimum size entry.
 	 */
-	arraysz = (stb.st_size / 24);
-	names = (struct dirent **)malloc(arraysz * sizeof(struct dirent *));
+	arraysz = MAXIMUM(stb.st_size / 24, 16);
+	if (arraysz > SIZE_MAX / sizeof(struct dirent *)) {
+		errno = ENOMEM;
+		goto fail;
+	}
+	names = calloc(arraysz, sizeof(struct dirent *));
 	if (names == NULL)
-		return(-1);
+		goto fail;
 
-	nitems = 0;
 	while ((d = readdir(dirp)) != NULL) {
 		if (select != NULL && !(*select)(d))
 			continue;	/* just selected names */
-		/*
-		 * Make a minimum size copy of the data
-		 */
-		p = (struct dirent *)malloc(DIRSIZ(d));
-		if (p == NULL)
-			return(-1);
-		p->d_ino = d->d_ino;
-		p->d_reclen = d->d_reclen;
-		p->d_namlen = d->d_namlen;
-		bcopy(d->d_name, p->d_name, p->d_namlen + 1);
+
 		/*
 		 * Check to make sure the array has space left and
 		 * realloc the maximum size.
 		 */
-		if (++nitems >= arraysz) {
-			if (fstat(dirp->dd_fd, &stb) < 0)
-				return(-1);	/* just might have grown */
-			arraysz = stb.st_size / 12;
-			names = (struct dirent **)realloc((char *)names,
-				arraysz * sizeof(struct dirent *));
-			if (names == NULL)
-				return(-1);
+		if (nitems >= arraysz) {
+			struct dirent **nnames;
+
+			if (fstat(dirp->dd_fd, &stb) == -1)
+				goto fail;
+
+			arraysz *= 2;
+			if (SIZE_MAX / sizeof(struct dirent *) < arraysz)
+				goto fail;
+			nnames = reallocarray(names,
+			    arraysz, sizeof(struct dirent *));
+			if (nnames == NULL)
+				goto fail;
+
+			names = nnames;
 		}
-		names[nitems-1] = p;
+
+		/*
+		 * Make a minimum size copy of the data
+		 */
+		p = malloc(DIRSIZ(d));
+		if (p == NULL)
+			goto fail;
+
+		p->d_ino = d->d_ino;
+		p->d_type = d->d_type;
+		p->d_reclen = d->d_reclen;
+		p->d_namlen = d->d_namlen;
+		bcopy(d->d_name, p->d_name, p->d_namlen + 1);
+		names[nitems++] = p;
 	}
 	closedir(dirp);
 	if (nitems && dcomp != NULL)
-		qsort(names, nitems, sizeof(struct dirent *), dcomp);
+		qsort(names, nitems, sizeof(struct dirent *),
+		    (int(*)(const void *, const void *))dcomp);
 	*namelist = names;
-	return(nitems);
+	return (nitems);
+
+fail:
+	while (nitems > 0)
+		free(names[--nitems]);
+	free(names);
+	closedir(dirp);
+	return (-1);
+}
+
+int
+scandir(const char *dirname, struct dirent ***namelist,
+    int (*select)(const struct dirent *),
+    int (*dcomp)(const struct dirent **, const struct dirent **))
+{
+	DIR *dirp;
+
+	if ((dirp = opendir(dirname)) == NULL)
+		return (-1);
+
+	return (scandir_dirp(dirp, namelist, select, dcomp));
+}
+
+int
+scandirat(int dirfd, const char *dirname, struct dirent ***namelist,
+    int (*select)(const struct dirent *),
+    int (*dcomp)(const struct dirent **, const struct dirent **))
+{
+	DIR *dirp;
+	int fd;
+
+	fd = HIDDEN(openat)(dirfd, dirname, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd == -1)
+		return (-1);
+	dirp = __fdopendir(fd);
+	if (dirp == NULL) {
+		HIDDEN(close)(fd);
+		return (-1);
+	}
+	return (scandir_dirp(dirp, namelist, select, dcomp));
 }
 
 /*
  * Alphabetic order comparison routine for those who want it.
  */
 int
-alphasort(d1, d2)
-	const void *d1;
-	const void *d2;
+alphasort(const struct dirent **d1, const struct dirent **d2)
 {
-	return(strcmp((*(struct dirent **)d1)->d_name,
-	    (*(struct dirent **)d2)->d_name));
+	return(strcmp((*d1)->d_name, (*d2)->d_name));
 }

@@ -1,5 +1,5 @@
 /* indices.h -- Functions defined in indices.c.
-   $Id: indices.h,v 1.1.1.3 2006/07/17 16:03:42 espie Exp $
+   $Id: indices.h,v 1.3 2006/07/17 16:12:36 espie Exp $
 
    This file is part of GNU Info, a program for reading online documentation
    stored in Info format.

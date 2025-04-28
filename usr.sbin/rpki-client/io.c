@@ -1,5 +1,6 @@
-/*	$Id: io.c,v 1.1.1.1 2019/06/17 14:31:30 job Exp $ */
+/*	$OpenBSD: io.c,v 1.26 2024/11/21 13:32:27 claudio Exp $ */
 /*
+ * Copyright (c) 2021 Claudio Jeker <claudio@openbsd.org>
  * Copyright (c) 2019 Kristaps Dzonsons <kristaps@bsd.lv>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -14,179 +15,174 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-#include "config.h"
 
 #include <sys/queue.h>
+#include <sys/socket.h>
 
-#include <assert.h>
 #include <err.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-#include <openssl/x509.h>
+#include <imsg.h>
 
 #include "extern.h"
 
-void
-io_socket_blocking(int fd)
+#define IO_FD_MARK	0x80000000U
+
+/*
+ * Create new io buffer, call io_close() when done with it.
+ * Function always returns a new buffer.
+ */
+struct ibuf *
+io_new_buffer(void)
 {
-	int	 fl;
+	struct ibuf *b;
 
-	if ((fl = fcntl(fd, F_GETFL, 0)) == -1)
-		err(EXIT_FAILURE, "fcntl");
-	if (fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) == -1)
-		err(EXIT_FAILURE, "fcntl");
-}
-
-void
-io_socket_nonblocking(int fd)
-{
-	int	 fl;
-
-	if ((fl = fcntl(fd, F_GETFL, 0)) == -1)
-		err(EXIT_FAILURE, "fcntl");
-	if (fcntl(fd, F_SETFL, fl | O_NONBLOCK) == -1)
-		err(EXIT_FAILURE, "fcntl");
+	if ((b = ibuf_dynamic(64, MAX_MSG_SIZE)) == NULL)
+		err(1, NULL);
+	ibuf_add_zero(b, sizeof(size_t));	/* can not fail */
+	return b;
 }
 
 /*
- * Blocking write of a binary buffer.
- * Buffers of length zero are simply ignored.
+ * Add a simple object of static size to the io buffer.
  */
 void
-io_simple_write(int fd, const void *res, size_t sz)
+io_simple_buffer(struct ibuf *b, const void *res, size_t sz)
 {
-	ssize_t	 ssz;
-
-	if (sz == 0)
-		return;
-	if ((ssz = write(fd, res, sz)) < 0)
-		err(EXIT_FAILURE, "write");
-	else if ((size_t)ssz != sz)
-		errx(EXIT_FAILURE, "write: short write");
+	if (ibuf_add(b, res, sz) == -1)
+		err(1, NULL);
 }
 
 /*
- * Like io_simple_write() but into a buffer.
+ * Add a sz sized buffer into the io buffer.
  */
 void
-io_simple_buffer(char **b, size_t *bsz,
-	size_t *bmax, const void *res, size_t sz)
+io_buf_buffer(struct ibuf *b, const void *p, size_t sz)
 {
-
-	if (*bsz + sz > *bmax) {
-		if ((*b = realloc(*b, *bsz + sz)) == NULL)
-			err(EXIT_FAILURE, NULL);
-		*bmax = *bsz + sz;
-	}
-
-	memcpy(*b + *bsz, res, sz);
-	*bsz += sz;
-}
-
-/*
- * Like io_buf_write() but into a buffer.
- */
-void
-io_buf_buffer(char **b, size_t *bsz,
-	size_t *bmax, const void *p, size_t sz)
-{
-
-	io_simple_buffer(b, bsz, bmax, &sz, sizeof(size_t));
+	if (ibuf_add(b, &sz, sizeof(size_t)) == -1)
+		err(1, NULL);
 	if (sz > 0)
-		io_simple_buffer(b, bsz, bmax, p, sz);
+		if (ibuf_add(b, p, sz) == -1)
+			err(1, NULL);
 }
 
 /*
- * Write a binary buffer of the given size, which may be zero.
+ * Add a string into the io buffer.
  */
 void
-io_buf_write(int fd, const void *p, size_t sz)
+io_str_buffer(struct ibuf *b, const char *p)
 {
+	size_t sz = (p == NULL) ? 0 : strlen(p);
 
-	io_simple_write(fd, &sz, sizeof(size_t));
-	io_simple_write(fd, p, sz);
+	io_buf_buffer(b, p, sz);
 }
 
 /*
- * Like io_str_write() but into a buffer.
+ * Finish and enqueue a io buffer.
  */
 void
-io_str_buffer(char **b, size_t *bsz, size_t *bmax, const char *p)
+io_close_buffer(struct msgbuf *msgbuf, struct ibuf *b)
 {
-	size_t	 sz = (p == NULL) ? 0 : strlen(p);
+	size_t len;
 
-	io_buf_buffer(b, bsz, bmax, p, sz);
+	len = ibuf_size(b);
+	if (ibuf_fd_avail(b))
+		len |= IO_FD_MARK;
+	ibuf_set(b, 0, &len, sizeof(len));
+	ibuf_close(msgbuf, b);
 }
 
 /*
- * Write a NUL-terminated string, which may be zero-length.
- */
-void
-io_str_write(int fd, const char *p)
-{
-	size_t	 sz = (p == NULL) ? 0 : strlen(p);
-
-	io_buf_write(fd, p, sz);
-}
-
-/*
- * Read of a binary buffer that must be on a blocking descriptor.
+ * Read of an ibuf and extract sz byte from there.
  * Does nothing if "sz" is zero.
- * This will fail and exit on EOF or short reads.
+ * Return 1 on success or 0 if there was not enough data.
  */
 void
-io_simple_read(int fd, void *res, size_t sz)
+io_read_buf(struct ibuf *b, void *res, size_t sz)
 {
-	ssize_t	 ssz;
-
-again:
 	if (sz == 0)
 		return;
-	if ((ssz = read(fd, res, sz)) < 0)
-		err(EXIT_FAILURE, "read");
-	else if (ssz == 0)
-		errx(EXIT_FAILURE, "read: unexpected end of file");
-	else if ((size_t)ssz == sz)
+	if (ibuf_get(b, res, sz) == -1)
+		err(1, "bad internal framing");
+}
+
+/*
+ * Read a string (returns NULL for zero-length strings), allocating
+ * space for it.
+ * Return 1 on success or 0 if there was not enough data.
+ */
+void
+io_read_str(struct ibuf *b, char **res)
+{
+	size_t	 sz;
+
+	io_read_buf(b, &sz, sizeof(sz));
+	if (sz == 0) {
+		*res = NULL;
 		return;
-	warnx("read: short read: %zu remain", sz - (size_t)ssz);
-	sz -= ssz;
-	res += ssz;
-	goto again;
+	}
+	if ((*res = calloc(sz + 1, 1)) == NULL)
+		err(1, NULL);
+	io_read_buf(b, *res, sz);
 }
 
 /*
  * Read a binary buffer, allocating space for it.
  * If the buffer is zero-sized, this won't allocate "res", but
  * will still initialise it to NULL.
+ * Return 1 on success or 0 if there was not enough data.
  */
 void
-io_buf_read_alloc(int fd, void **res, size_t *sz)
+io_read_buf_alloc(struct ibuf *b, void **res, size_t *sz)
 {
-
 	*res = NULL;
-	io_simple_read(fd, sz, sizeof(size_t));
+	io_read_buf(b, sz, sizeof(*sz));
 	if (*sz == 0)
 		return;
 	if ((*res = malloc(*sz)) == NULL)
-		err(EXIT_FAILURE, NULL);
-	io_simple_read(fd, *res, *sz);
+		err(1, NULL);
+	io_read_buf(b, *res, *sz);
 }
 
-/*
- * Read a string (which may just be \0 and zero-length), allocating
- * space for it.
- */
-void
-io_str_read(int fd, char **res)
+struct ibuf *
+io_parse_hdr(struct ibuf *buf, void *arg, int *fd)
 {
-	size_t	 sz;
+	struct ibuf *b;
+	size_t len;
+	int hasfd = 0;
 
-	io_simple_read(fd, &sz, sizeof(size_t));
-	if ((*res = calloc(sz + 1, 1)) == NULL)
-		err(EXIT_FAILURE, NULL);
-	io_simple_read(fd, *res, sz);
+	if (ibuf_get(buf, &len, sizeof(len)) == -1)
+		return NULL;
+
+	if (len & IO_FD_MARK) {
+		hasfd = 1;
+		len &= ~IO_FD_MARK;
+	}
+	if (len <= sizeof(len) || len > MAX_MSG_SIZE) {
+		errno = ERANGE;
+		return NULL;
+	}
+	if ((b = ibuf_open(len)) == NULL)
+		return NULL;
+	if (hasfd) {
+		ibuf_fd_set(b, *fd);
+		*fd = -1;
+	}
+	return b;
+}
+
+struct ibuf *
+io_buf_get(struct msgbuf *msgq)
+{
+	struct ibuf *b;
+
+	if ((b = msgbuf_get(msgq)) == NULL)
+		return NULL;
+
+	ibuf_skip(b, sizeof(size_t));
+	return b;
 }

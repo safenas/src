@@ -1,4 +1,4 @@
-# $Id: Makefile.am,v 1.1.1.4 2006/07/17 16:03:45 espie Exp $
+# $Id: Makefile.am,v 1.5 2006/07/17 16:12:36 espie Exp $
 # Makefile.am for texinfo/makeinfo.
 # Run automake in .. to produce Makefile.in from this.
 #

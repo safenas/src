@@ -1,6 +1,6 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: log.h,v 1.23 2008/06/10 01:00:34 joris Exp $	*/
 /*
- * Copyright (c) 2004 Jean-Francois Brousseau <jfb@fugusec.net>
+ * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -27,45 +27,25 @@
 #ifndef LOG_H
 #define LOG_H
 
-#include <sys/types.h>
-
 #include <stdarg.h>
 
-/* log destinations */
-#define LD_STD      0x01
-#define LD_SYSLOG   0x02
-#define LD_CONS     0x04
-
-#define LD_ALL      (LD_STD|LD_SYSLOG|LD_CONS)
-
-/* log flags */
-#define LF_PID     0x01     /* include PID in messages */
-
-
-
 /* log priority levels */
-#define LP_DEBUG    0
-#define LP_INFO     1
-#define LP_NOTICE   2
-#define LP_WARNING  3
-#define LP_WARN     LP_WARNING
-#define LP_ERROR    4
-#define LP_ERR      LP_ERROR
-#define LP_ALERT    5
-#define LP_ERRNO    6
- 
-#define LP_MAX      6
-#define LP_ALL      255
- 
-/* filtering methods */
-#define LP_FILTER_SET     0     /* set a filter */
-#define LP_FILTER_UNSET   1     /* remove a filter */
-#define LP_FILTER_TOGGLE  2
+#define LP_NOTICE	0
+#define LP_ERR		1
+#define LP_ERRNO	2
+#define LP_ABORT	3
+#define LP_TRACE	4
+#define LP_RCS		5
 
-int   cvs_log_init    (u_int, u_int);
-void  cvs_log_cleanup (void);
-int   cvs_log_filter  (u_int, u_int);
-int   cvs_log         (u_int, const char *, ...);
-int   cvs_vlog        (u_int, const char *, va_list);
+#define LOG_REVSEP \
+"----------------------------"
 
-#endif /* LOG_H */
+#define LOG_REVEND \
+ "============================================================================="
+
+void	cvs_log(u_int, const char *, ...) __attribute__((format(printf, 2, 3)));
+void	cvs_vlog(u_int, const char *, va_list);
+int	cvs_printf(const char *, ...) __attribute__((format(printf, 1, 2)));
+void	fatal(const char *, ...) __dead __attribute__((format(printf, 1,2)));
+
+#endif	/* LOG_H */

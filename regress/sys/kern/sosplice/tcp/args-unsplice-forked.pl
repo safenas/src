@@ -6,8 +6,9 @@ use POSIX;
 
 our %args = (
     client => {
-	len => 2**17,
 	func => sub { errignore(@_); write_stream(@_); },
+	len => 2**17,
+	sndbuf => 2**15,
     },
     relay => {
 	func => sub {
@@ -16,8 +17,10 @@ our %args = (
 		or die "relay func: fork failed: $!";
 	    if ($pid == 0) {
 		sleep 2;
-		setsplice(\*STDIN)
-		    or die ref($self), " unsplice stdin failed: $!";
+		if ($self->{forward} =~ /splice/) {
+		    setsplice(\*STDIN)
+			or die ref($self), " unsplice stdin failed: $!";
+		}
 		POSIX::_exit(0);
 	    }
 	    sleep 1;
@@ -43,6 +46,7 @@ our %args = (
     },
     server => {
 	func => sub { sleep 3; read_stream(@_); },
+	rcvbuf => 2**15,
     },
     noecho => 1,
     nocheck => 1,

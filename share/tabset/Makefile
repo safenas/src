@@ -1,14 +1,15 @@
+#	$OpenBSD: Makefile,v 1.6 2024/08/23 15:13:58 nicm Exp $
 #	from: @(#)Makefile	5.3 (Berkeley) 10/22/90
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:44:47 deraadt Exp $
 
-FILES=	3101 9837 aa aed512 beehive diablo dtc382 hp700-wy ibm3101 std \
-	stdcrt tandem653 teleray vt100 wyse-adds xerox1720 xerox1730 \
-	xerox1730-lm zenith29
-NOOBJ=	noobj
+FILES=	std stdcrt vt100 vt300
+CLEANFILES+= ${FILES}
 
-all clean cleandir depend lint tags:
+all: ${FILES}
 
-realinstall:
+${FILES}:
+	sh ${.CURDIR}/gentabset.sh ${.OBJDIR}
+
+realinstall: ${FILES}
 	install -c -o ${BINOWN} -g ${BINGRP} -m 444 ${FILES} \
 	    ${DESTDIR}${BINDIR}/tabset
 

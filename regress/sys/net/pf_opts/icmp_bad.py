@@ -1,9 +1,10 @@
 #!/usr/local/bin/python3
 
-print("send icmp unknown option")
+print("send icmp with unknown option")
 
 import os
 import sys
+from struct import pack
 from addr import *
 from scapy.all import *
 
@@ -21,4 +22,6 @@ payload=b"ABCDEFGHIJKLMNOP"
 packet=IP(src=ADDR, dst=ADDR, options=b"\003\004\000\000")/ \
     ICMP(type=6, id=eid)/payload
 
-send(packet, iface=IF)
+# send() does not work for some reason, add the bpf loopback layer manually
+bpf=pack('!I', 2) + bytes(packet)
+sendp(bpf, iface=IF)

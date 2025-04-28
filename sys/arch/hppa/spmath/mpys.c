@@ -1,3 +1,4 @@
+/*	$OpenBSD: mpys.c,v 1.6 2002/05/07 22:19:30 mickey Exp $	*/
 /*
   (c) Copyright 1986 HEWLETT-PACKARD COMPANY
   To anyone who acknowledges that this file is provided "AS IS"
@@ -11,25 +12,21 @@
   Hewlett-Packard Company makes no representations about the
   suitability of this software for any purpose.
 */
-/* $Source: /home/cvs/src/sys/arch/hppa/spmath/mpys.c,v $
- * $Revision: 1.1.1.1 $	$Author: mickey $
- * $State: Exp $   	$Locker:  $
- * $Date: 2002/05/07 21:37:19 $
- */
+/* @(#)mpys.c: Revision: 1.6.88.1 Date: 93/12/07 15:06:43 */
 
+#include "md.h"
 
-#include "../spmath/md.h"
-
-VOID mpys(opnd1,opnd2,result)
-
-int opnd1, opnd2;
-struct mdsfu_register *result;
+void
+mpys(opnd1,opnd2,result)
+	int opnd1, opnd2;
+	struct mdsfu_register *result;
 {
-	impys(&opnd1,&opnd2,result);
+	s_xmpy(&opnd1,&opnd2,result);
 
 	/* determine overflow status */
 	if ((result_hi == 0 && result_lo >= 0) ||
-	    (result_hi == -1 && result_lo < 0)) overflow = FALSE;
-	else overflow = TRUE;
-	return;
+	    (result_hi == -1 && result_lo < 0))
+		overflow = FALSE;
+	else
+		overflow = TRUE;
 }

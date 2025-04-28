@@ -1,20 +1,28 @@
-#ifndef lint
-static char rcsid[] = "$Id: getopt.c,v 1.1.1.1 1995/10/18 08:45:19 deraadt Exp $";
-#endif /* not lint */
+/*	$OpenBSD: getopt.c,v 1.9 2015/10/07 06:39:16 deraadt Exp $	*/
+
+/*
+ * This material, written by Henry Spencer, was released by him
+ * into the public domain and is thus not subject to any copyright.
+ */
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <err.h>
 
-main(argc, argv)
-int argc;
-char *argv[];
+int
+main(int argc, char *argv[])
 {
 	extern int optind;
 	extern char *optarg;
 	int c;
 	int status = 0;
 
+	if (pledge("stdio", NULL) == -1)
+		err(1, "pledge");
+
 	optind = 2;	/* Past the program name and the option letters. */
-	while ((c = getopt(argc, argv, argv[1])) != EOF)
+	while ((c = getopt(argc, argv, argv[1])) != -1)
 		switch (c) {
 		case '?':
 			status = 1;	/* getopt routine gave message */

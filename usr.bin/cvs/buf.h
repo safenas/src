@@ -1,6 +1,6 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: buf.h,v 1.28 2010/08/01 09:55:40 zinovik Exp $	*/
 /*
- * Copyright (c) 2003 Jean-Francois Brousseau <jfb@fugusec.net>
+ * Copyright (c) 2003 Jean-Francois Brousseau <jfb@openbsd.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,17 +22,6 @@
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * Buffer management
- * -----------------
- *
- * This code provides an API to generic memory buffer management.  All
- * operations are performed on a cvs_buf structure, which is kept opaque to the
- * API user in order to avoid corruption of the fields and make sure that only
- * the internals can modify the fields.
- *
- * The first step is to allocate a new buffer using the cvs_buf_create()
- * function, which returns a pointer to a new buffer.
  */
 
 #ifndef BUF_H
@@ -40,28 +29,22 @@
 
 #include <sys/types.h>
 
+typedef struct buf BUF;
+struct timeval;
 
-/* flags */
-#define BUF_AUTOEXT   1      /* autoextend on append */
+BUF		*buf_alloc(size_t);
+BUF		*buf_load(const char *);
+BUF		*buf_load_fd(int);
+void		 buf_free(BUF *);
+void		*buf_release(BUF *);
+u_char		*buf_get(BUF *);
+void		 buf_append(BUF *, const void *, size_t);
+void		 buf_putc(BUF *, int);
+void		 buf_puts(BUF *, const char *);
+size_t		 buf_len(BUF *);
+int		 buf_write_fd(BUF *, int);
+int		 buf_write(BUF *, const char *, mode_t);
+int		 buf_differ(const BUF *, const BUF *);
+int		 buf_write_stmp(BUF *, char *, struct timeval *);
 
-
-typedef struct cvs_buf BUF;
-
-
-BUF*         cvs_buf_alloc   (size_t, u_int);
-BUF*         cvs_buf_load    (const char *, u_int);
-void         cvs_buf_free    (BUF *);
-void*        cvs_buf_release (BUF *);
-void         cvs_buf_empty   (BUF *);
-ssize_t      cvs_buf_copy    (BUF *, size_t, void *, size_t);
-int          cvs_buf_set     (BUF *, const void *, size_t, size_t);
-int          cvs_buf_append  (BUF *, const void *, size_t);
-int          cvs_buf_fappend (BUF *, const char *, ...);
-int          cvs_buf_putc    (BUF *, int);
-size_t       cvs_buf_size    (BUF *);
-const void*  cvs_buf_peek    (BUF *, size_t);
-int          cvs_buf_write   (BUF *, const char *, mode_t);
-
-#define cvs_buf_get(b)   cvs_buf_peek(b, 0)
-
-#endif /* BUF_H */
+#endif	/* BUF_H */

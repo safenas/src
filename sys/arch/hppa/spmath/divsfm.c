@@ -1,3 +1,4 @@
+/*	$OpenBSD$	*/
 /*
   (c) Copyright 1986 HEWLETT-PACKARD COMPANY
   To anyone who acknowledges that this file is provided "AS IS"
@@ -11,19 +12,14 @@
   Hewlett-Packard Company makes no representations about the
   suitability of this software for any purpose.
 */
-/* $Source: /home/cvs/src/sys/arch/hppa/spmath/divsfm.c,v $
- * $Revision: 1.1.1.1 $	$Author: mickey $
- * $State: Exp $   	$Locker:  $
- * $Date: 2002/05/07 21:37:19 $
- */
+/* @(#)divsfm.c: Revision: 1.6.88.1 Date: 93/12/07 15:05:51 */
 
+#include "md.h"
 
-#include "../spmath/md.h"
-
-VOID divsfm(opnd1,opnd2,result)
-
-int opnd1, opnd2;
-struct mdsfu_register *result;
+void
+divsfm(opnd1,opnd2,result)
+	int opnd1, opnd2;
+	struct mdsfu_register *result;
 {
 	register int sign, op1_sign;
 
@@ -44,10 +40,10 @@ struct mdsfu_register *result;
 	else op1_sign = FALSE;
 	if (opnd2 < 0) opnd2 = -opnd2;
 
-	/* 
-	 * check for overflow 
+	/*
+	 * check for overflow
 	 *
-	 * if abs(opnd1) < 0, then opnd1 = -2**31 
+	 * if abs(opnd1) < 0, then opnd1 = -2**31
 	 * and abs(opnd1) >= abs(opnd2) always
 	 */
 	if (opnd1 >= opnd2 || opnd1 < 0) {

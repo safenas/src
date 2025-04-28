@@ -8,8 +8,8 @@
 
 /* -*-C-*-
  *
- * $Revision: 1.1.1.1 $
- *     $Date: 2004/05/21 19:15:54 $
+ * $Revision: 1.3 $
+ *     $Date: 2004/12/27 14:00:54 $
  *
  *
  * crc.c - provides some "standard" CRC calculation routines.

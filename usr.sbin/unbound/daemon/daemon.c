@@ -344,7 +344,7 @@ static int setup_acl_for_ports(struct acl_list* list,
 	return 1;
 }
 
-int
+int 
 daemon_open_shared_ports(struct daemon* daemon)
 {
 	log_assert(daemon);

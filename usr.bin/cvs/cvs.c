@@ -1,17 +1,17 @@
-#define DEBUG
-/*	$OpenBSD$	*/
+/*	$OpenBSD: cvs.c,v 1.159 2017/06/01 08:08:24 joris Exp $	*/
 /*
+ * Copyright (c) 2006, 2007 Joris Vink <joris@openbsd.org>
  * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
- * All rights reserved. 
+ * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without 
- * modification, are permitted provided that the following conditions 
- * are met: 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
  *
- * 1. Redistributions of source code must retain the above copyright 
- *    notice, this list of conditions and the following disclaimer. 
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
  * 2. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission. 
+ *    derived from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
  * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
@@ -22,282 +22,184 @@
  * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/types.h>
-#include <sys/wait.h>
+#include <sys/stat.h>
 
-#include <err.h>
-#include <pwd.h>
+#include <ctype.h>
 #include <errno.h>
-#include <stdio.h>
+#include <pwd.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
 #include <string.h>
-#include <sysexits.h>
+#include <time.h>
+#include <unistd.h>
+#include <err.h>
 
 #include "cvs.h"
-#include "log.h"
-
+#include "remote.h"
+#include "hash.h"
 
 extern char *__progname;
-
 
 /* verbosity level: 0 = really quiet, 1 = quiet, 2 = verbose */
 int verbosity = 2;
 
-
-
 /* compression level used with zlib, 0 meaning no compression taking place */
-int   cvs_compress = 0;
-int   cvs_trace = 0;
-int   cvs_nolog = 0;
-int   cvs_readonly = 0;
+int	cvs_compress = 0;
+int	cvs_readrc = 1;		/* read .cvsrc on startup */
+int	cvs_trace = 0;
+int	cvs_nolog = 0;
+int	cvs_readonly = 0;
+int	cvs_readonlyfs = 0;
+int	cvs_nocase = 0;	/* set to 1 to disable filename case sensitivity */
+int	cvs_noexec = 0;	/* set to 1 to disable disk operations (-n option) */
+int	cvs_cmdop;
+int	cvs_umask = CVS_UMASK_DEFAULT;
+int	cvs_server_active = 0;
 
-/* name of the command we are running */
-char *cvs_command;
-char *cvs_rootstr;
-char *cvs_rsh = CVS_RSH_DEFAULT;
-char *cvs_editor = CVS_EDITOR_DEFAULT;
+char	*cvs_tagname = NULL;
+char	*cvs_defargs;		/* default global arguments from .cvsrc */
+char	*cvs_rootstr;
+char	*cvs_rsh = CVS_RSH_DEFAULT;
+char	*cvs_editor = CVS_EDITOR_DEFAULT;
+char	*cvs_homedir = NULL;
+char	*cvs_tmpdir = CVS_TMPDIR_DEFAULT;
 
-struct cvsroot *cvs_root = NULL;
+struct cvsroot *current_cvsroot = NULL;
+struct cvs_cmd *cmdp;			/* struct of command we are running */
 
+int		cvs_getopt(int, char **);
+__dead void	usage(void);
+static void	cvs_read_rcfile(void);
 
-/*
- * Command dispatch table
- * ----------------------
- *
- * The synopsis field should only contain the list of arguments that the
- * command supports, without the actual command's name.
- *
- * Command handlers are expected to return 0 if no error occured, or one of
- * the values known in sysexits.h in case of an error.  In case the error
- * returned is EX_USAGE, the command's usage string is printed to standard
- * error before returning.
- */
+struct cvs_varhead cvs_variables;
 
-static struct cvs_cmd {
-	char    cmd_name[CVS_CMD_MAXNAMELEN];
-	char    cmd_alias[CVS_CMD_MAXALIAS][CVS_CMD_MAXNAMELEN];
-	int   (*cmd_hdlr)(int, char **);
-	char   *cmd_synopsis;
-	char    cmd_descr[CVS_CMD_MAXDESCRLEN];
-} cvs_cdt[] = {
-	{
-		"add",      { "ad",  "new" }, cvs_add,
-		"[-m msg] file ...",
-		"Add a new file/directory to the repository",
-	},
-	{
-		"admin",    { "adm", "rcs" }, NULL,
-		"",
-		"Administration front end for rcs",
-	},
-	{
-		"annotate", { "ann"        }, NULL,
-		"",
-		"Show last revision where each line was modified",
-	},
-	{
-		"checkout", { "co",  "get" }, NULL,
-		"",
-		"Checkout sources for editing",
-	},
-	{
-		"commit",   { "ci",  "com" }, cvs_commit,
-		"",
-		"Check files into the repository",
-	},
-	{
-		"diff",     { "di",  "dif" }, cvs_diff,
-		"",
-		"Show differences between revisions",
-	},
-	{
-		"edit",     {              }, NULL,
-		"",
-		"Get ready to edit a watched file",
-	},
-	{
-		"editors",  {              }, NULL,
-		"",
-		"See who is editing a watched file",
-	},
-	{
-		"export",   { "ex",  "exp" }, NULL,
-		"",
-		"Export sources from CVS, similar to checkout",
-	},
-	{
-		"history",  { "hi",  "his" }, cvs_history,
-		"",
-		"Show repository access history",
-	},
-	{
-		"import",   { "im",  "imp" }, NULL,
-		"",
-		"Import sources into CVS, using vendor branches",
-	},
-	{
-		"init",     {              }, cvs_init,
-		"",
-		"Create a CVS repository if it doesn't exist",
-	},
-#if defined(HAVE_KERBEROS)
-	{
-		"kserver",  {}, NULL
-		"",
-		"Start a Kerberos authentication CVS server",
-	},
-#endif
-	{
-		"log",      { "lo"         }, cvs_getlog,
-		"",
-		"Print out history information for files",
-	},
-	{
-		"login",    {}, NULL,
-		"",
-		"Prompt for password for authenticating server",
-	},
-	{
-		"logout",   {}, NULL,
-		"",
-		"Removes entry in .cvspass for remote repository",
-	},
-	{
-		"rdiff",    {}, NULL,
-		"",
-		"Create 'patch' format diffs between releases",
-	},
-	{
-		"release",  {}, NULL,
-		"",
-		"Indicate that a Module is no longer in use",
-	},
-	{
-		"remove",   {}, NULL,
-		"",
-		"Remove an entry from the repository",
-	},
-	{
-		"rlog",     {}, NULL,
-		"",
-		"Print out history information for a module",
-	},
-	{
-		"rtag",     {}, NULL,
-		"",
-		"Add a symbolic tag to a module",
-	},
-	{
-		"server",   {}, cvs_server,
-		"",
-		"Server mode",
-	},
-	{
-		"status",   {}, NULL,
-		"",
-		"Display status information on checked out files",
-	},
-	{
-		"tag",      { "ta", }, NULL,
-		"",
-		"Add a symbolic tag to checked out version of files",
-	},
-	{
-		"unedit",   {}, NULL,
-		"",
-		"Undo an edit command",
-	},
-	{
-		"update",   {}, cvs_update,
-		"",
-		"Bring work tree in sync with repository",
-	},
-	{
-		"version",  {}, cvs_version,
-		"",
-		"Show current CVS version(s)",
-	},
-	{
-		"watch",    {}, NULL,
-		"",
-		"Set watches",
-	},
-	{
-		"watchers", {}, NULL,
-		"",
-		"See who is watching a file",
-	},
-};
+struct wklhead temp_files;
 
-#define CVS_NBCMD  (sizeof(cvs_cdt)/sizeof(cvs_cdt[0]))
+void sighandler(int);
+volatile sig_atomic_t cvs_quit = 0;
+volatile sig_atomic_t sig_received = 0;
 
+extern CVSENTRIES *current_list;
 
-
-void             usage        (void);
-void             sigchld_hdlr (int);
-void             cvs_readrc   (void);
-struct cvs_cmd*  cvs_findcmd  (const char *); 
-
-
-
-/*
- * sigchld_hdlr()
- *
- * Handler for the SIGCHLD signal, which can be received in case we are
- * running a remote server and it dies.
- */
+struct hash_table created_directories;
+struct hash_table created_cvs_directories;
 
 void
-sigchld_hdlr(int signo)
+sighandler(int sig)
 {
-	int status;
-	pid_t pid;
+	sig_received = sig;
 
-	if ((pid = wait(&status)) == -1) {
+	switch (sig) {
+	case SIGINT:
+	case SIGTERM:
+	case SIGPIPE:
+		cvs_quit = 1;
+		break;
+	default:
+		break;
 	}
 }
 
-
-/*
- * usage()
- *
- * Display usage information.
- */
-
 void
-usage(void)
+cvs_cleanup(void)
 {
-	fprintf(stderr,
-	    "Usage: %s [-lQqtv] [-d root] [-e editor] [-z level] "
-	    "command [options] ...\n",
-	    __progname);
+	cvs_log(LP_TRACE, "cvs_cleanup: removing locks");
+	worklist_run(&repo_locks, worklist_unlink);
+
+	cvs_log(LP_TRACE, "cvs_cleanup: removing temp files");
+	worklist_run(&temp_files, worklist_unlink);
+
+	if (cvs_server_path != NULL) {
+		if (cvs_rmdir(cvs_server_path) == -1)
+			cvs_log(LP_ERR,
+			    "warning: failed to remove server directory: %s",
+			    cvs_server_path);
+		free(cvs_server_path);
+		cvs_server_path = NULL;
+	}
+
+	if (current_list != NULL)
+		cvs_ent_close(current_list, ENT_SYNC);
 }
 
+__dead void
+usage(void)
+{
+	(void)fprintf(stderr,
+	    "usage: %s [-flnQqRrtvw] [-d root] [-e editor] [-s var=val]\n"
+	    "           [-T tmpdir] [-z level] command ...\n", __progname);
+	exit(1);
+}
+
+int
+cvs_build_cmd(char ***cmd_argv, char **argv, int argc)
+{
+	int cmd_argc, i, cur;
+	char *cp, *linebuf, *lp;
+
+	if (cmdp->cmd_defargs == NULL) {
+		*cmd_argv = argv;
+		return argc;
+	}
+
+	cur = argc + 2;
+	cmd_argc = 0;
+	*cmd_argv = xcalloc(cur, sizeof(char *));
+	(*cmd_argv)[cmd_argc++] = argv[0];
+
+	linebuf = xstrdup(cmdp->cmd_defargs);
+	for (lp = linebuf; lp != NULL;) {
+		cp = strsep(&lp, " \t\b\f\n\r\t\v");
+		if (cp == NULL)
+			break;
+		if (*cp == '\0')
+			continue;
+
+		if (cmd_argc == cur) {
+			cur += 8;
+			*cmd_argv = xreallocarray(*cmd_argv, cur,
+			    sizeof(char *));
+		}
+
+		(*cmd_argv)[cmd_argc++] = cp;
+	}
+
+	if (cmd_argc + argc > cur) {
+		cur = cmd_argc + argc + 1;
+		*cmd_argv = xreallocarray(*cmd_argv, cur,
+		    sizeof(char *));
+        }
+
+	for (i = 1; i < argc; i++)
+		(*cmd_argv)[cmd_argc++] = argv[i];
+
+	(*cmd_argv)[cmd_argc] = NULL;
+
+	return cmd_argc;
+}
 
 int
 main(int argc, char **argv)
 {
-	char *envstr, *ep;
-	int ret;
-	u_int i, readrc;
-	struct cvs_cmd *cmdp;
+	char *envstr, **cmd_argv, **targv;
+	int i, ret, cmd_argc;
+	struct passwd *pw;
+	struct stat st;
+	char fpath[PATH_MAX];
 
-	readrc = 1;
+	if (pledge("stdio rpath wpath cpath fattr getpw proc exec", NULL) == -1)
+		err(1, "pledge");
 
-	if (cvs_log_init(LD_STD, 0) < 0)
-		err(1, "failed to initialize logging");
+	tzset();
 
-	/* by default, be very verbose */
-	(void)cvs_log_filter(LP_FILTER_UNSET, LP_INFO);
+	TAILQ_INIT(&cvs_variables);
+	SLIST_INIT(&repo_locks);
+	SLIST_INIT(&temp_files);
 
-#ifdef DEBUG
-	(void)cvs_log_filter(LP_FILTER_UNSET, LP_DEBUG);
-#endif
+	hash_table_init(&created_directories, 100);
+	hash_table_init(&created_cvs_directories, 100);
 
 	/* check environment so command-line options override it */
 	if ((envstr = getenv("CVS_RSH")) != NULL)
@@ -308,8 +210,142 @@ main(int argc, char **argv)
 	    ((envstr = getenv("EDITOR")) != NULL))
 		cvs_editor = envstr;
 
-	while ((ret = getopt(argc, argv, "d:e:fHlnQqrtvz:")) != -1) {
+	if ((envstr = getenv("CVSREAD")) != NULL)
+		cvs_readonly = 1;
+
+	if ((envstr = getenv("CVSREADONLYFS")) != NULL) {
+		cvs_readonlyfs = 1;
+		cvs_nolog = 1;
+	}
+
+	if ((cvs_homedir = getenv("HOME")) == NULL) {
+		if ((pw = getpwuid(getuid())) != NULL)
+			cvs_homedir = pw->pw_dir;
+	}
+
+	if ((envstr = getenv("TMPDIR")) != NULL)
+		cvs_tmpdir = envstr;
+
+	ret = cvs_getopt(argc, argv);
+
+	argc -= ret;
+	argv += ret;
+	if (argc == 0)
+		usage();
+
+	cmdp = cvs_findcmd(argv[0]);
+	if (cmdp == NULL) {
+		fprintf(stderr, "Unknown command: `%s'\n\n", argv[0]);
+		fprintf(stderr, "CVS commands are:\n");
+		for (i = 0; cvs_cdt[i] != NULL; i++)
+			fprintf(stderr, "\t%-16s%s\n",
+			    cvs_cdt[i]->cmd_name, cvs_cdt[i]->cmd_descr);
+		exit(1);
+	}
+
+	/*
+	 * check the tmp dir, either specified through
+	 * the environment variable TMPDIR, or via
+	 * the global option -T <dir>
+	 */
+	if (stat(cvs_tmpdir, &st) == -1)
+		fatal("stat failed on `%s': %s", cvs_tmpdir, strerror(errno));
+	else if (!S_ISDIR(st.st_mode))
+		fatal("`%s' is not valid temporary directory", cvs_tmpdir);
+
+	if (cvs_readrc == 1 && cvs_homedir != NULL) {
+		cvs_read_rcfile();
+
+		if (cvs_defargs != NULL) {
+			if ((targv = cvs_makeargv(cvs_defargs, &i)) == NULL)
+				fatal("failed to load default arguments to %s",
+				    __progname);
+
+			cvs_getopt(i, targv);
+			cvs_freeargv(targv, i);
+			free(targv);
+		}
+	}
+
+	/* setup signal handlers */
+	signal(SIGTERM, sighandler);
+	signal(SIGINT, sighandler);
+	signal(SIGHUP, sighandler);
+	signal(SIGABRT, sighandler);
+	signal(SIGALRM, sighandler);
+	signal(SIGPIPE, sighandler);
+
+	cvs_cmdop = cmdp->cmd_op;
+
+	cmd_argc = cvs_build_cmd(&cmd_argv, argv, argc);
+
+	cvs_file_init();
+
+	if (cvs_cmdop == CVS_OP_SERVER) {
+		cmdp->cmd(cmd_argc, cmd_argv);
+		cvs_cleanup();
+		return (0);
+	}
+
+	cvs_umask = umask(0);
+	umask(cvs_umask);
+
+	if ((current_cvsroot = cvsroot_get(".")) == NULL) {
+		cvs_log(LP_ERR,
+		    "No CVSROOT specified! Please use the '-d' option");
+		fatal("or set the CVSROOT environment variable.");
+	}
+
+	if (cvsroot_is_remote()) {
+		cmdp->cmd(cmd_argc, cmd_argv);
+		cvs_cleanup();
+		return (0);
+	}
+
+	(void)xsnprintf(fpath, sizeof(fpath), "%s/%s",
+	    current_cvsroot->cr_dir, CVS_PATH_ROOT);
+
+	if (stat(fpath, &st) == -1 && cvs_cmdop != CVS_OP_INIT) {
+		if (errno == ENOENT)
+			fatal("repository '%s' does not exist",
+			    current_cvsroot->cr_dir);
+		else
+			fatal("%s: %s", current_cvsroot->cr_dir,
+			    strerror(errno));
+	} else {
+		if (!S_ISDIR(st.st_mode))
+			fatal("'%s' is not a directory",
+			    current_cvsroot->cr_dir);
+	}
+
+	if (cvs_cmdop != CVS_OP_INIT) {
+		cvs_parse_configfile();
+		cvs_parse_modules();
+	}
+
+	cmdp->cmd(cmd_argc, cmd_argv);
+	cvs_cleanup();
+
+	return (0);
+}
+
+int
+cvs_getopt(int argc, char **argv)
+{
+	int ret;
+	char *ep;
+	const char *errstr;
+
+	while ((ret = getopt(argc, argv, "b:d:e:flnQqRrs:T:tvwxz:")) != -1) {
 		switch (ret) {
+		case 'b':
+			/*
+			 * We do not care about the bin directory for RCS files
+			 * as this program has no dependencies on RCS programs,
+			 * so it is only here for backwards compatibility.
+			 */
+			cvs_log(LP_NOTICE, "the -b argument is obsolete");
+			break;
 		case 'd':
 			cvs_rootstr = optarg;
 			break;
@@ -317,23 +353,41 @@ main(int argc, char **argv)
 			cvs_editor = optarg;
 			break;
 		case 'f':
-			readrc = 0;
+			cvs_readrc = 0;
 			break;
 		case 'l':
 			cvs_nolog = 1;
 			break;
 		case 'n':
+			cvs_noexec = 1;
+			cvs_nolog = 1;
 			break;
 		case 'Q':
 			verbosity = 0;
 			break;
 		case 'q':
-			/* don't override -Q */
 			if (verbosity > 1)
 				verbosity = 1;
 			break;
+		case 'R':
+			cvs_readonlyfs = 1;
+			cvs_nolog = 1;
+			break;
 		case 'r':
 			cvs_readonly = 1;
+			break;
+		case 's':
+			ep = strchr(optarg, '=');
+			if (ep == NULL) {
+				cvs_log(LP_ERR, "no = in variable assignment");
+				exit(1);
+			}
+			*(ep++) = '\0';
+			if (cvs_var_set(optarg, ep) < 0)
+				exit(1);
+			break;
+		case 'T':
+			cvs_tmpdir = optarg;
 			break;
 		case 't':
 			cvs_trace = 1;
@@ -342,123 +396,55 @@ main(int argc, char **argv)
 			printf("%s\n", CVS_VERSION);
 			exit(0);
 			/* NOTREACHED */
+		case 'w':
+			cvs_readonly = 0;
+			break;
+		case 'x':
+			/*
+			 * Kerberos encryption support, kept for compatibility
+			 */
 			break;
 		case 'z':
-			cvs_compress = (int)strtol(optarg, &ep, 10); 
-			if (*ep != '\0')
-				errx(1, "error parsing compression level");
-			if (cvs_compress < 0 || cvs_compress > 9)
-				errx(1, "gzip compression level must be "
-				    "between 0 and 9");
+			cvs_compress = strtonum(optarg, 0, 9, &errstr);
+			if (errstr != NULL)
+				fatal("cvs_compress: %s", errstr);
 			break;
 		default:
 			usage();
-			exit(EX_USAGE);
+			/* NOTREACHED */
 		}
 	}
 
-	argc -= optind;
-	argv += optind;
-
-	/* reset getopt() for use by commands */
+	ret = optind;
 	optind = 1;
-	optreset = 1;
-
-	if (argc == 0) {
-		usage();
-		exit(EX_USAGE);
-	}
-
-	/* setup signal handlers */
-	signal(SIGCHLD, sigchld_hdlr);
-
-	if (readrc)
-		cvs_readrc();
-
-	cvs_command = argv[0];
-	ret = -1;
-
-	cmdp = cvs_findcmd(cvs_command);
-	if (cmdp == NULL) {
-		fprintf(stderr, "Unknown command: `%s'\n\n", cvs_command);
-		fprintf(stderr, "CVS commands are:\n");
-		for (i = 0; i < CVS_NBCMD; i++)
-			fprintf(stderr, "\t%-16s%s\n",
-			    cvs_cdt[i].cmd_name, cvs_cdt[i].cmd_descr);
-		exit(EX_USAGE);
-	}
-
-	if (cmdp->cmd_hdlr == NULL) {
-		cvs_log(LP_ERR, "command `%s' not implemented", cvs_command);
-		exit(1);
-	}
-
-	ret = (*cmdp->cmd_hdlr)(argc, argv);
-	if (ret == EX_USAGE) {
-		fprintf(stderr, "Usage: %s %s %s\n", __progname, cvs_command,
-		    cmdp->cmd_synopsis);
-	}
+	optreset = 1;	/* for next call */
 
 	return (ret);
 }
 
-
 /*
- * cvs_findcmd()
- *
- * Find the entry in the command dispatch table whose name or one of its
- * aliases matches <cmd>.
- * Returns a pointer to the command entry on success, NULL on failure.
- */
-
-struct cvs_cmd*
-cvs_findcmd(const char *cmd)
-{
-	u_int i, j;
-	struct cvs_cmd *cmdp;
-
-	cmdp = NULL;
-
-	for (i = 0; (i < CVS_NBCMD) && (cmdp == NULL); i++) {
-		if (strcmp(cmd, cvs_cdt[i].cmd_name) == 0)
-			cmdp = &cvs_cdt[i];
-		else {
-			for (j = 0; j < CVS_CMD_MAXALIAS; j++) {
-				if (strcmp(cmd, cvs_cdt[i].cmd_alias[j]) == 0) {
-					cmdp = &cvs_cdt[i];
-					break;
-				}
-			}
-		}
-	}
-
-	return (cmdp);
-}
-
-
-/*
- * cvs_readrc()
+ * cvs_read_rcfile()
  *
  * Read the CVS `.cvsrc' file in the user's home directory.  If the file
  * exists, it should contain a list of arguments that should always be given
  * implicitly to the specified commands.
  */
-
-void
-cvs_readrc(void)
+static void
+cvs_read_rcfile(void)
 {
-	char rcpath[MAXPATHLEN], linebuf[128], *lp;
-	struct cvs_cmd *cmdp;
-	struct passwd *pw;
+	char rcpath[PATH_MAX], *buf, *lbuf, *lp, *p;
+	int cmd_parsed, cvs_parsed, i, linenum;
+	size_t len, pos;
+	struct cvs_cmd *tcmdp;
 	FILE *fp;
 
-	pw = getpwuid(getuid());
-	if (pw == NULL) {
-		cvs_log(LP_NOTICE, "failed to get user's password entry");
+	linenum = 0;
+
+	i = snprintf(rcpath, PATH_MAX, "%s/%s", cvs_homedir, CVS_PATH_RC);
+	if (i < 0 || i >= PATH_MAX) {
+		cvs_log(LP_ERRNO, "%s", rcpath);
 		return;
 	}
-
-	snprintf(rcpath, sizeof(rcpath), "%s/%s", pw->pw_dir, CVS_PATH_RC);
 
 	fp = fopen(rcpath, "r");
 	if (fp == NULL) {
@@ -468,30 +454,163 @@ cvs_readrc(void)
 		return;
 	}
 
-	while (fgets(linebuf, sizeof(linebuf), fp) != NULL) {
-		lp = strchr(linebuf, ' ');
+	cmd_parsed = cvs_parsed = 0;
+	lbuf = NULL;
+	while ((buf = fgetln(fp, &len)) != NULL) {
+		if (buf[len - 1] == '\n') {
+			buf[len - 1] = '\0';
+		} else {
+			lbuf = xmalloc(len + 1);
+			memcpy(lbuf, buf, len);
+			lbuf[len] = '\0';
+			buf = lbuf;
+		}
 
-		/* ignore lines with no arguments */
-		if (lp == NULL)
+		linenum++;
+
+		/* skip any whitespaces */
+		p = buf;
+		while (*p == ' ')
+			p++;
+
+		/*
+		 * Allow comments.
+		 * GNU cvs stops parsing a line if it encounters a \t
+		 * in front of a command, stick at this behaviour for
+		 * compatibility.
+		 */
+		if (*p == '#' || *p == '\t')
 			continue;
 
-		*(lp++) = '\0';
-		if (strcmp(linebuf, "cvs") == 0) {
-			/* global options */
+		pos = strcspn(p, " \t");
+		if (pos == strlen(p)) {
+			lp = NULL;
+		} else {
+			lp = p + pos;
+			*lp = '\0';
 		}
-		else {
-			cmdp = cvs_findcmd(linebuf);
-			if (cmdp == NULL) {
-				cvs_log(LP_NOTICE,
-				    "unknown command `%s' in cvsrc",
-				    linebuf);
-				continue;
+
+		if (strcmp(p, "cvs") == 0 && !cvs_parsed) {
+			/*
+			 * Global default options.  In the case of cvs only,
+			 * we keep the 'cvs' string as first argument because
+			 * getopt() does not like starting at index 0 for
+			 * argument processing.
+			 */
+			if (lp != NULL) {
+				*lp = ' ';
+				cvs_defargs = xstrdup(p);
 			}
+			cvs_parsed = 1;
+		} else {
+			tcmdp = cvs_findcmd(p);
+			if (tcmdp == NULL && verbosity == 2)
+				cvs_log(LP_NOTICE,
+				    "unknown command `%s' in `%s:%d'",
+				    p, rcpath, linenum);
+
+			if (tcmdp != cmdp || cmd_parsed)
+				continue;
+
+			if (lp != NULL) {
+				lp++;
+				cmdp->cmd_defargs = xstrdup(lp);
+			}
+			cmd_parsed = 1;
 		}
 	}
+	free(lbuf);
+
 	if (ferror(fp)) {
-		cvs_log(LP_NOTICE, "failed to read line from cvsrc");
+		cvs_log(LP_NOTICE, "failed to read line from `%s'", rcpath);
 	}
 
 	(void)fclose(fp);
+}
+
+/*
+ * cvs_var_set()
+ *
+ * Set the value of the variable <var> to <val>.  If there is no such variable,
+ * a new entry is created, otherwise the old value is overwritten.
+ * Returns 0 on success, or -1 on failure.
+ */
+int
+cvs_var_set(const char *var, const char *val)
+{
+	const char *cp;
+	struct cvs_var *vp;
+
+	if (var == NULL || *var == '\0') {
+		cvs_log(LP_ERR, "no variable name");
+		return (-1);
+	}
+
+	/* sanity check on the name */
+	for (cp = var; *cp != '\0'; cp++)
+		if (!isalnum((unsigned char)*cp) && (*cp != '_')) {
+			cvs_log(LP_ERR,
+			    "variable name `%s' contains invalid characters",
+			    var);
+			return (-1);
+		}
+
+	TAILQ_FOREACH(vp, &cvs_variables, cv_link)
+		if (strcmp(vp->cv_name, var) == 0)
+			break;
+
+	if (vp == NULL) {
+		vp = xcalloc(1, sizeof(*vp));
+
+		vp->cv_name = xstrdup(var);
+		TAILQ_INSERT_TAIL(&cvs_variables, vp, cv_link);
+
+	} else	/* free the previous value */
+		free(vp->cv_val);
+
+	vp->cv_val = xstrdup(val);
+
+	return (0);
+}
+
+/*
+ * cvs_var_unset()
+ *
+ * Remove any entry for the variable <var>.
+ * Returns 0 on success, or -1 on failure.
+ */
+int
+cvs_var_unset(const char *var)
+{
+	struct cvs_var *vp;
+
+	TAILQ_FOREACH(vp, &cvs_variables, cv_link)
+		if (strcmp(vp->cv_name, var) == 0) {
+			TAILQ_REMOVE(&cvs_variables, vp, cv_link);
+			free(vp->cv_name);
+			free(vp->cv_val);
+			free(vp);
+			return (0);
+		}
+
+	return (-1);
+}
+
+/*
+ * cvs_var_get()
+ *
+ * Get the value associated with the variable <var>.  Returns a pointer to the
+ * value string on success, or NULL if the variable does not exist.
+ */
+
+const char *
+cvs_var_get(const char *var)
+{
+	struct cvs_var *vp;
+
+	TAILQ_FOREACH(vp, &cvs_variables, cv_link)
+		if (strcmp(vp->cv_name, var) == 0)
+			return (vp->cv_val);
+
+	return (NULL);
 }

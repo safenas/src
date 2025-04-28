@@ -1,41 +1,41 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: test.h,v 1.6 2012/04/13 10:15:49 guenther Exp $	*/
 
 #ifndef _h_test_
 #define _h_test_
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <signal.h>
 #include <errno.h>
 #include <string.h>
 #include <stdarg.h>
+#include <unistd.h>
 
-int	_thread_sys_write __P((int, const char*, size_t));
-__dead void _thread_sys__exit __P((int)) __attribute__((__noreturn__));
-
-static __dead void __vpanic __P((const char *, const char *, const char *, 
-	int, const char *, va_list)) __attribute__((__noreturn__));
-static __dead void __panic __P((const char *, const char *, const char *,
-	int, const char *, ...)) __attribute__((__noreturn__));
+static void __vpanic(const char *, const char *, const char *, 
+	int, const char *, va_list) __attribute__((__noreturn__));
+static void __panic(const char *, const char *, const char *,
+	int, const char *, ...) __attribute__((__noreturn__))
+	__attribute__((__format__ (printf, 5, 6)));
 
 #if defined(__OpenBSD__) || defined(__FreeBSD__)
 #include <pthread.h>
 #include <pthread_np.h>
-void	_thread_dump_info __P((void));
+void	_thread_dump_info(void);
+int	_thread_sys_write(int, const char*, size_t);
+void	_thread_sys__exit(int) __attribute__((__noreturn__));
 #define SET_NAME(x)	pthread_set_name_np(pthread_self(), x)
 #define DUMP_INFO()	_thread_dump_info()
 #else
+#define	_thread_sys_write(fd,buf,len)	write(fd,buf,len)
+#define	_thread_sys__exit(ret)		_exit(ret)
+#define	strlcat(dst,src,siz)		strcat(dst,src)
 #define SET_NAME(x)	/* nada */
 #define DUMP_INFO()	/* nada */
 #endif
 
 static void
-__vpanic(type, errstr, filenm, lineno, fmt, ap)
-	const char *type; 
-	const char *errstr;
-	const char *filenm;
-	int lineno; 
-	const char *fmt; 
-	va_list ap;
+__vpanic(const char *type, const char *errstr, const char *filenm, int lineno,
+    const char *fmt, va_list ap)
 {
 	char buf[1024];
 
@@ -58,12 +58,8 @@ __vpanic(type, errstr, filenm, lineno, fmt, ap)
 }
 
 static void
-__panic(type, errstr, filenm, lineno, fmt)
-	const char *type;
-	const char *errstr;
-	const char *filenm;
-	int lineno; 
-	const char *fmt;
+__panic(const char *type, const char *errstr, const char *filenm, int lineno,
+    const char *fmt, ...)
 {
 	va_list ap;
 
@@ -120,4 +116,4 @@ __panic(type, errstr, filenm, lineno, fmt)
 #define OK		(0)
 #define NOTOK		(-1)
 
-#endif _h_test_
+#endif /* _h_test_ */

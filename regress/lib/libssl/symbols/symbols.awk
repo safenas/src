@@ -1,4 +1,4 @@
-# $OpenBSD: symbols.awk,v 1.8 2023/05/04 20:15:27 tb Exp $
+# $OpenBSD: symbols.awk,v 1.3 2024/04/17 22:48:17 tb Exp $
 
 # Copyright (c) 2018,2020,2023 Theo Buehler <tb@openbsd.org>
 #
@@ -17,18 +17,13 @@
 # usage: awk -f symbols.awk < Symbols.list > symbols.c
 
 BEGIN {
+	printf("#include <stdio.h>\n\n")
+
 	printf("#include <openssl/dtls1.h>\n")
 	printf("#include <openssl/ssl.h>\n")
-	printf("#include <openssl/ssl2.h>\n")
-	printf("#include <openssl/ssl23.h>\n")
-	printf("#include <openssl/ssl3.h>\n")
 	printf("#include <openssl/tls1.h>\n\n")
 
 	printf("#include <openssl/srtp.h>\n\n")		# depends on ssl.h
-}
-
-/^SSL_version_str$/ {
-	printf("extern const char *%s;\n", $0)
 }
 
 {

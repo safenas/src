@@ -1,5 +1,5 @@
 # Makefile.am for texinfo.
-# $Id: Makefile.am,v 1.1.1.5 2006/07/17 16:03:11 espie Exp $
+# $Id: Makefile.am,v 1.5 2006/07/17 16:12:35 espie Exp $
 # Process this file with automake to produce Makefile.in in all directories.
 #
 # This file is free software; as a special exception the author gives

@@ -1,16 +1,16 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: root.c,v 1.48 2015/01/16 06:40:07 deraadt Exp $	*/
 /*
  * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
- * All rights reserved. 
+ * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without 
- * modification, are permitted provided that the following conditions 
- * are met: 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
  *
- * 1. Redistributions of source code must retain the above copyright 
- *    notice, this list of conditions and the following disclaimer. 
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
  * 2. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission. 
+ *    derived from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
  * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
@@ -21,25 +21,16 @@
  * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/types.h>
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <err.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
-#include <paths.h>
 
 #include "cvs.h"
-#include "log.h"
-
 
 extern char *cvs_rootstr;
-
 
 /* keep these ordered with the defines */
 const char *cvs_methods[] = {
@@ -53,9 +44,7 @@ const char *cvs_methods[] = {
 	"fork",
 };
 
-#define CVS_NBMETHODS  (sizeof(cvs_methods)/sizeof(cvs_methods[0]))
- 
-
+#define CVS_NBMETHODS	(sizeof(cvs_methods)/sizeof(cvs_methods[0]))
 
 /*
  * cvsroot_parse()
@@ -63,46 +52,33 @@ const char *cvs_methods[] = {
  * Parse a CVS root string (as found in CVS/Root files or the CVSROOT
  * environment variable) and store the fields in a dynamically
  * allocated cvs_root structure.  The format of the string is as follows:
- *	:method:path
+ *	[:method:][[user[:pass]@]host[:port]:]path
  * Returns a pointer to the allocated information on success, or NULL
  * on failure.
  */
-
-struct cvsroot*
+static struct cvsroot *
 cvsroot_parse(const char *str)
 {
 	u_int i;
 	char *cp, *sp, *pp;
-	struct cvsroot *root;
+	const char *errstr;
+	static struct cvsroot *root = NULL;
 
-	root = (struct cvsroot *)malloc(sizeof(*root));
-	if (root == NULL) {
-		cvs_log(LP_ERRNO, "failed to allocate CVS root data");
-		return (NULL);
-	}
+	if (root != NULL)
+		return (root);
 
+	root = xcalloc(1, sizeof(*root));
 	root->cr_method = CVS_METHOD_NONE;
-
-	root->cr_buf = strdup(str);
-	if (root->cr_buf == NULL) {
-		cvs_log(LP_ERRNO, "failed to copy CVS root");
-		free(root);
-		return (NULL);
-	}
+	root->cr_str = xstrdup(str);
+	root->cr_buf = xstrdup(str);
 
 	sp = root->cr_buf;
 	cp = root->cr_buf;
-
 	if (*sp == ':') {
 		sp++;
-		cp = strchr(sp, ':');
-		if (cp == NULL) {
-			cvs_log(LP_ERR, "failed to parse CVSROOT: "
-			    "unterminated method");
-			free(root->cr_buf);
-			free(root);
-			return (NULL);
-		}
+		if ((cp = strchr(sp, ':')) == NULL)
+			fatal("failed to parse CVSROOT: unterminated method");
+
 		*(cp++) = '\0';
 
 		for (i = 0; i < CVS_NBMETHODS; i++) {
@@ -111,18 +87,16 @@ cvsroot_parse(const char *str)
 				break;
 			}
 		}
+		if (i == CVS_NBMETHODS)
+			fatal("cvsroot_parse: unknown method `%s'", sp);
 	}
 
 	/* find the start of the actual path */
-	sp = strchr(cp, '/');
-	if (sp == NULL) {
-		cvs_log(LP_ERR, "no path specification in CVSROOT");
-		free(root->cr_buf);
-		free(root);
-		return (NULL);
-	}
+	if ((sp = strchr(cp, '/')) == NULL)
+		fatal("no path specification in CVSROOT");
 
 	root->cr_dir = sp;
+	STRIP_SLASH(root->cr_dir);
 	if (sp == cp) {
 		if (root->cr_method == CVS_METHOD_NONE)
 			root->cr_method = CVS_METHOD_LOCAL;
@@ -130,11 +104,9 @@ cvsroot_parse(const char *str)
 		return (root);
 	}
 
-	if (*(sp - 1) != ':') {
-		cvs_log(LP_ERR, "missing host/path delimiter in CVS root");
-		free(root);
-		return (NULL);
-	}
+	if (*(sp - 1) != ':')
+		fatal("missing host/path delimiter in CVSROOT");
+
 	*(sp - 1) = '\0';
 
 	/*
@@ -153,18 +125,15 @@ cvsroot_parse(const char *str)
 		}
 
 		root->cr_user = cp;
-	}
+	} else
+		sp = cp;
 
 	pp = strchr(sp, ':');
 	if (pp != NULL) {
 		*(pp++) = '\0';
-		root->cr_port = (u_int)strtol(pp, &cp, 10);
-		if (*cp != '\0' || root->cr_port > 65535) {
-			cvs_log(LP_ERR,
-			    "invalid port specification in CVSROOT");
-			free(root);
-			return (NULL);
-		}
+		root->cr_port = strtonum(pp, 1, 65535, &errstr);
+		if (errstr != NULL)
+			fatal("port specification in CVSROOT is %s", errstr);
 
 	}
 
@@ -181,22 +150,6 @@ cvsroot_parse(const char *str)
 	return (root);
 }
 
-
-/*
- * cvsroot_free()
- *
- * Free a CVSROOT structure previously allocated and returned by
- * cvsroot_parse().
- */
-
-void
-cvsroot_free(struct cvsroot *root)
-{
-	free(root->cr_buf);
-	free(root);
-}
-
-
 /*
  * cvsroot_get()
  *
@@ -207,55 +160,65 @@ cvsroot_free(struct cvsroot *root)
  * 2) the CVS/Root file found in checked-out trees
  * 3) the CVSROOT environment variable
  */
-
-struct cvsroot*
+struct cvsroot *
 cvsroot_get(const char *dir)
 {
-	size_t len;
-	char rootpath[MAXPATHLEN], *rootstr, *line;
+	char rootpath[PATH_MAX], *rootstr, line[128];
 	FILE *fp;
-	struct cvsroot *rp;
 
 	if (cvs_rootstr != NULL)
 		return cvsroot_parse(cvs_rootstr);
 
-	snprintf(rootpath, sizeof(rootpath), "%s/" CVS_PATH_ROOTSPEC, dir);
-	fp = fopen(rootpath, "r");
-	if (fp == NULL) {
+	if (cvs_server_active == 1)
+		return cvsroot_parse(dir);
+
+	if (cvs_cmdop == CVS_OP_IMPORT) {
+		if ((rootstr = getenv("CVSROOT")) != NULL)
+			return (cvsroot_parse(rootstr));
+		return (NULL);
+	}
+
+	(void)xsnprintf(rootpath, PATH_MAX, "%s/%s", dir, CVS_PATH_ROOTSPEC);
+
+	if ((fp = fopen(rootpath, "r")) == NULL) {
 		if (errno == ENOENT) {
 			/* try env as a last resort */
 			if ((rootstr = getenv("CVSROOT")) != NULL)
 				return cvsroot_parse(rootstr);
 			else
 				return (NULL);
-		}
-		else {
-			cvs_log(LP_ERRNO, "failed to open CVS/Root");
-			return (NULL);
+		} else {
+			fatal("cvsroot_get: fopen: `%s': %s",
+			    CVS_PATH_ROOTSPEC, strerror(errno));
 		}
 	}
 
-	line = fgetln(fp, &len);
-	if (line == NULL) {
-		cvs_log(LP_ERR, "failed to read CVSROOT line from CVS/Root");
-		(void)fclose(fp);
-	}
-
-	/* line is not NUL-terminated, but we don't need to allocate an
-	 * extra byte because we don't want the trailing newline.  It will
-	 * get replaced by a \0.
-	 */
-	rootstr = (char *)malloc(len);
-	if (rootstr == NULL) {
-		cvs_log(LP_ERRNO, "failed to allocate CVSROOT string");
-		(void)fclose(fp);
-		return (NULL);
-	}
-	strlcpy(rootstr, line, len);
-	rp = cvsroot_parse(rootstr);
+	if (fgets(line, (int)sizeof(line), fp) == NULL)
+		fatal("cvsroot_get: fgets: `%s'", CVS_PATH_ROOTSPEC);
 
 	(void)fclose(fp);
-	free(rootstr);
 
-	return (rp);
+	line[strcspn(line, "\n")] = '\0';
+	if (line[0] == '\0')
+		cvs_log(LP_ERR, "empty %s file", CVS_PATH_ROOTSPEC);
+
+	return cvsroot_parse(line);
+}
+
+int
+cvsroot_is_local(void)
+{
+	if (current_cvsroot == NULL)
+		fatal("cvsroot_is_local: no CVSROOT");
+
+	return (current_cvsroot->cr_method == CVS_METHOD_LOCAL);
+}
+
+int
+cvsroot_is_remote(void)
+{
+	if (current_cvsroot == NULL)
+		fatal("cvsroot_is_remote: no CVSROOT");
+
+	return (current_cvsroot->cr_method != CVS_METHOD_LOCAL);
 }

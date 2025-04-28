@@ -1,4 +1,4 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: engine.c,v 1.3 2022/12/28 21:30:17 jmc Exp $	*/
 
 /*
  * Copyright (c) 2017 Eric Faurot <eric@openbsd.org>
@@ -49,7 +49,7 @@ engine(int debug, int verbose)
 		fatal("%s: malloc", __func__);
 	gethostname(lpd_hostname, HOST_NAME_MAX + 1);
 
-	/* Drop priviledges. */
+	/* Drop privileges. */
 	if ((pw = getpwnam(LPD_USER)) == NULL)
 		fatal("%s: getpwnam: %s", __func__, LPD_USER);
 
@@ -93,6 +93,7 @@ static void
 engine_dispatch_priv(struct imsgproc *proc, struct imsg *imsg, void *arg)
 {
 	struct lp_printer lp;
+	int fd;
 
 	if (imsg == NULL) {
 		log_debug("%s: imsg connection lost", __func__);
@@ -107,10 +108,10 @@ engine_dispatch_priv(struct imsgproc *proc, struct imsg *imsg, void *arg)
 	case IMSG_SOCK_FRONTEND:
 		m_end(proc);
 
-		if (imsg->fd == -1)
+		if ((fd = imsg_get_fd(imsg)) == -1)
 			fatalx("failed to receive frontend socket");
 
-		p_frontend = proc_attach(PROC_FRONTEND, imsg->fd);
+		p_frontend = proc_attach(PROC_FRONTEND, fd);
 		proc_setcallback(p_frontend, engine_dispatch_frontend, NULL);
 		proc_enable(p_frontend);
 		break;
@@ -148,8 +149,8 @@ engine_dispatch_frontend(struct imsgproc *proc, struct imsg *imsg, void *arg)
 		log_imsg(proc, imsg);
 
 	switch (imsg->hdr.type) {
-	case IMSG_RES_GETADDRINFO:
-	case IMSG_RES_GETNAMEINFO:
+	case IMSG_GETADDRINFO:
+	case IMSG_GETNAMEINFO:
 		resolver_dispatch_request(proc, imsg);
 		break;
 

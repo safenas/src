@@ -8,8 +8,8 @@
 
 /* -*-C-*-
  *
- * $Revision: 1.1.1.1 $
- *     $Date: 2004/05/21 19:15:48 $
+ * $Revision: 1.3 $
+ *     $Date: 2004/12/27 14:00:53 $
  *
  *
  * angel_endian.h - target endianness independent read/write primitives.

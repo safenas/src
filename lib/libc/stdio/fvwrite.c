@@ -1,5 +1,4 @@
-/*	$NetBSD: fvwrite.c,v 1.4 1995/02/02 02:09:45 jtc Exp $	*/
-
+/*	$OpenBSD: fvwrite.c,v 1.21 2023/10/06 16:41:02 millert Exp $ */
 /*-
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
@@ -15,11 +14,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -36,15 +31,11 @@
  * SUCH DAMAGE.
  */
 
-#if defined(LIBC_SCCS) && !defined(lint)
-#if 0
-static char sccsid[] = "@(#)fvwrite.c	8.1 (Berkeley) 6/4/93";
-#endif
-static char rcsid[] = "$NetBSD: fvwrite.c,v 1.4 1995/02/02 02:09:45 jtc Exp $";
-#endif /* LIBC_SCCS and not lint */
-
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "local.h"
 #include "fvwrite.h"
 
@@ -54,14 +45,13 @@ static char rcsid[] = "$NetBSD: fvwrite.c,v 1.4 1995/02/02 02:09:45 jtc Exp $";
  * This routine is large and unsightly, but most of the ugliness due
  * to the three different kinds of output buffering is handled here.
  */
-__sfvwrite(fp, uio)
-	register FILE *fp;
-	register struct __suio *uio;
+int
+__sfvwrite(FILE *fp, struct __suio *uio)
 {
-	register size_t len;
-	register char *p;
-	register struct __siov *iov;
-	register int w, s;
+	size_t len;
+	char *p;
+	struct __siov *iov;
+	int w, s;
 	char *nl;
 	int nlknown, nldist;
 
@@ -72,7 +62,7 @@ __sfvwrite(fp, uio)
 		return (EOF);
 
 #define	MIN(a, b) ((a) < (b) ? (a) : (b))
-#define	COPY(n)	  (void)memcpy((void *)fp->_p, (void *)p, (size_t)(n))
+#define	COPY(n)	  (void)memcpy(fp->_p, p, n)
 
 	iov = uio->uio_iov;
 	p = iov->iov_base;
@@ -87,11 +77,12 @@ __sfvwrite(fp, uio)
 	}
 	if (fp->_flags & __SNBF) {
 		/*
-		 * Unbuffered: write up to BUFSIZ bytes at a time.
+		 * Unbuffered: write up to INT_MAX bytes at a time, to not
+		 * truncate the value of len if it is greater than 2^31 bytes.
 		 */
 		do {
 			GETIOV(;);
-			w = (*fp->_write)(fp->_cookie, p, MIN(len, BUFSIZ));
+			w = (*fp->_write)(fp->_cookie, p, MIN(len, INT_MAX));
 			if (w <= 0)
 				goto err;
 			p += w;
@@ -101,7 +92,8 @@ __sfvwrite(fp, uio)
 		/*
 		 * Fully buffered: fill partially full buffer, if any,
 		 * and then flush.  If there is no partial buffer, write
-		 * one _bf._size byte chunk directly (without copying).
+		 * entire payload directly (without copying) up to a
+		 * multiple of the buffer size.
 		 *
 		 * String output is a special case: write as many bytes
 		 * as fit, but pretend we wrote everything.  This makes
@@ -111,6 +103,24 @@ __sfvwrite(fp, uio)
 		 */
 		do {
 			GETIOV(;);
+			if ((fp->_flags & (__SALC | __SSTR)) ==
+			    (__SALC | __SSTR) && fp->_w < len) {
+				size_t blen = fp->_p - fp->_bf._base;
+				int pgmsk = getpagesize() - 1;
+				unsigned char *_base;
+				int _size;
+
+				/* Round up to nearest page. */
+				_size = ((blen + len + 1 + pgmsk) & ~pgmsk) - 1;
+				_base = recallocarray(fp->_bf._base,
+				    fp->_bf._size + 1, _size + 1, 1);
+				if (_base == NULL)
+					goto err;
+				fp->_w += _size - fp->_bf._size;
+				fp->_bf._base = _base;
+				fp->_bf._size = _size;
+				fp->_p = _base + blen;
+			}
 			w = fp->_w;
 			if (fp->_flags & __SSTR) {
 				if (len < w)
@@ -124,10 +134,18 @@ __sfvwrite(fp, uio)
 				COPY(w);
 				/* fp->_w -= w; */ /* unneeded */
 				fp->_p += w;
-				if (fflush(fp))
+				if (__sflush(fp))
 					goto err;
 			} else if (len >= (w = fp->_bf._size)) {
-				/* write directly */
+				/*
+				 * Write directly up to INT_MAX or greatest
+				 * multiple of buffer size (whichever is
+				 * smaller), keeping in the memory buffer the
+				 * remaining part of payload that is smaller
+				 * than buffer size.
+				 */
+				if (w != 0)
+					w = MIN(w * (len / w), INT_MAX);
 				w = (*fp->_write)(fp->_cookie, p, w);
 				if (w <= 0)
 					goto err;
@@ -154,7 +172,7 @@ __sfvwrite(fp, uio)
 		do {
 			GETIOV(nlknown = 0);
 			if (!nlknown) {
-				nl = memchr((void *)p, '\n', len);
+				nl = memchr(p, '\n', len);
 				nldist = nl ? nl + 1 - p : len + 1;
 				nlknown = 1;
 			}
@@ -164,7 +182,7 @@ __sfvwrite(fp, uio)
 				COPY(w);
 				/* fp->_w -= w; */
 				fp->_p += w;
-				if (fflush(fp))
+				if (__sflush(fp))
 					goto err;
 			} else if (s >= (w = fp->_bf._size)) {
 				w = (*fp->_write)(fp->_cookie, p, w);
@@ -178,7 +196,7 @@ __sfvwrite(fp, uio)
 			}
 			if ((nldist -= w) == 0) {
 				/* copied the newline: flush and forget */
-				if (fflush(fp))
+				if (__sflush(fp))
 					goto err;
 				nlknown = 0;
 			}

@@ -1,13 +1,9 @@
-#	from: @(#)Makefile	8.1 (Berkeley) 6/6/93
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:45:24 deraadt Exp $
+#	$OpenBSD: Makefile,v 1.4 1997/04/27 20:56:45 millert Exp $
 
 PROG=	id
 MAN=	id.1 groups.1 whoami.1
 
-afterinstall:
-	install -c -o ${BINOWN} -g ${BINGRP} -m ${BINMODE} \
-	    ${.CURDIR}/groups.sh ${DESTDIR}/usr/bin/groups
-	install -c -o ${BINOWN} -g ${BINGRP} -m ${BINMODE} \
-	    ${.CURDIR}/whoami.sh ${DESTDIR}/usr/bin/whoami
+LINKS=	${BINDIR}/id ${BINDIR}/groups \
+	${BINDIR}/id ${BINDIR}/whoami
 
 .include <bsd.prog.mk>

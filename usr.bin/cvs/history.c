@@ -1,205 +1,241 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: history.c,v 1.45 2017/07/20 13:39:11 okan Exp $	*/
 /*
- * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
- * All rights reserved. 
+ * Copyright (c) 2007 Joris Vink <joris@openbsd.org>
  *
- * Redistribution and use in source and binary forms, with or without 
- * modification, are permitted provided that the following conditions 
- * are met: 
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
  *
- * 1. Redistributions of source code must retain the above copyright 
- *    notice, this list of conditions and the following disclaimer. 
- * 2. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission. 
- *
- * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
- * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
- * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
- * THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL  DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/param.h>
 #include <sys/stat.h>
 
+#include <ctype.h>
 #include <errno.h>
-#include <stdio.h>
 #include <fcntl.h>
+#include <pwd.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <string.h>
-#include <sysexits.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "cvs.h"
-#include "rcs.h"
-#include "log.h"
+#include "remote.h"
 
-#define CVS_HISTORY_MAXMOD    16
+static void	history_compress(char *, const char *);
 
-/* history flags */
-#define CVS_HF_A     0x01
-#define CVS_HF_C     0x02
-#define CVS_HF_E     0x04
-#define CVS_HF_L     0x08
-#define CVS_HF_M     0x10
-#define CVS_HF_O     0x20
-#define CVS_HF_T     0x40
-#define CVS_HF_W     0x80
+struct cvs_cmd		cvs_cmd_history = {
+	CVS_OP_HISTORY, CVS_USE_WDIR, "history",
+	{ "hi", "his" },			/* omghi2you */
+	"Display history of actions done in the base repository",
+	"[-ac]",
+	"ac",
+	NULL,
+	cvs_history
+};
 
-#define CVS_HF_EXCL (CVS_HF_C|CVS_HF_E|CVS_HF_M|CVS_HF_O|CVS_HF_T|CVS_HF_X)
+/* keep in sync with the defines for history stuff in cvs.h */
+const char historytab[] = {
+	'T',
+	'O',
+	'E',
+	'F',
+	'W',
+	'U',
+	'G',
+	'C',
+	'M',
+	'A',
+	'R',
+	'\0'
+};
 
-static void  cvs_history_print  (struct cvs_hent *);
+#define HISTORY_ALL_USERS		0x01
+#define HISTORY_DISPLAY_ARCHIVED	0x02
 
+void
+cvs_history_add(int type, struct cvs_file *cf, const char *argument)
+{
+	BUF *buf;
+	FILE *fp;
+	RCSNUM *hrev;
+	size_t len;
+	int fd;
+	char *cwd, *p, *rev;
+	char revbuf[CVS_REV_BUFSZ], repo[PATH_MAX], fpath[PATH_MAX];
+	char timebuf[CVS_TIME_BUFSZ];
+	struct tm datetm;
 
-extern char *__progname;
+	if (cvs_nolog == 1)
+		return;
 
-extern struct cvsroot *cvs_root;
+	if (cvs_cmdop == CVS_OP_CHECKOUT || cvs_cmdop == CVS_OP_EXPORT) {
+		if (type != CVS_HISTORY_CHECKOUT &&
+		    type != CVS_HISTORY_EXPORT)
+			return;
+	}
 
+	cvs_log(LP_TRACE, "cvs_history_add(`%c', `%s', `%s')",
+	    historytab[type], (cf != NULL) ? cf->file_name : "", argument);
 
-/*
- * cvs_history()
- *
- * Handle the `cvs history' command.
- */
+	/* construct repository field */
+	if (cvs_cmdop != CVS_OP_CHECKOUT && cvs_cmdop != CVS_OP_EXPORT) {
+		cvs_get_repository_name((cf != NULL) ? cf->file_wd : ".",
+		    repo, sizeof(repo));
+	} else {
+		cvs_get_repository_name(argument, repo, sizeof(repo));
+	}
 
+	if (cvs_server_active == 1) {
+		cwd = "<remote>";
+	} else {
+		if (getcwd(fpath, sizeof(fpath)) == NULL)
+			fatal("cvs_history_add: getcwd: %s", strerror(errno));
+		p = fpath;
+		if (cvs_cmdop == CVS_OP_CHECKOUT ||
+		    cvs_cmdop == CVS_OP_EXPORT) {
+			if (strlcat(fpath, "/", sizeof(fpath)) >=
+			    sizeof(fpath) || strlcat(fpath, argument,
+			    sizeof(fpath)) >= sizeof(fpath))
+				fatal("cvs_history_add: string truncation");
+		}
+		if (cvs_homedir != NULL && cvs_homedir[0] != '\0') {
+			len = strlen(cvs_homedir);
+			if (strncmp(cvs_homedir, fpath, len) == 0 &&
+			    fpath[len] == '/') {
+				p += len - 1;
+				*p = '~';
+			}
+		}
+
+		history_compress(p, repo);
+		cwd = xstrdup(p);
+	}
+
+	/* construct revision field */
+	revbuf[0] = '\0';
+	rev = revbuf;
+	switch (type) {
+	case CVS_HISTORY_TAG:
+		strlcpy(revbuf, argument, sizeof(revbuf));
+		break;
+	case CVS_HISTORY_CHECKOUT:
+	case CVS_HISTORY_EXPORT:
+		/*
+		 * buf_alloc uses xcalloc(), so we are safe even
+		 * if neither cvs_specified_tag nor cvs_specified_date
+		 * have been supplied.
+		 */
+		buf = buf_alloc(128);
+		if (cvs_specified_tag != NULL) {
+			buf_puts(buf, cvs_specified_tag);
+			if (cvs_specified_date != -1)
+				buf_putc(buf, ':');
+		}
+		if (cvs_specified_date != -1) {
+			gmtime_r(&cvs_specified_date, &datetm);
+			strftime(timebuf, sizeof(timebuf),
+			    "%Y.%m.%d.%H.%M.%S", &datetm);
+			buf_puts(buf, timebuf);
+		}
+		rev = buf_release(buf);
+		break;
+	case CVS_HISTORY_UPDATE_MERGED:
+	case CVS_HISTORY_UPDATE_MERGED_ERR:
+	case CVS_HISTORY_COMMIT_MODIFIED:
+	case CVS_HISTORY_COMMIT_ADDED:
+	case CVS_HISTORY_COMMIT_REMOVED:
+	case CVS_HISTORY_UPDATE_CO:
+		if ((hrev = rcs_head_get(cf->file_rcs)) == NULL)
+			fatal("cvs_history_add: rcs_head_get failed");
+		rcsnum_tostr(hrev, revbuf, sizeof(revbuf));
+		free(hrev);
+		break;
+	}
+
+	(void)xsnprintf(fpath, sizeof(fpath), "%s/%s",
+	    current_cvsroot->cr_dir, CVS_PATH_HISTORY);
+
+	if ((fd = open(fpath, O_WRONLY|O_APPEND)) == -1) {
+		if (errno != ENOENT)
+			cvs_log(LP_ERR, "failed to open history file");
+	} else {
+		if ((fp = fdopen(fd, "a")) != NULL) {
+			fprintf(fp, "%c%08llx|%s|%s|%s|%s|%s\n",
+			    historytab[type], (long long)time(NULL),
+			    getlogin(), cwd, repo, rev,
+			    (cf != NULL) ? cf->file_name : argument);
+			(void)fclose(fp);
+		} else {
+			cvs_log(LP_ERR, "failed to add entry to history file");
+			(void)close(fd);
+		}
+	}
+
+	if (rev != revbuf)
+		free(rev);
+	if (cvs_server_active != 1)
+		free(cwd);
+}
+
+static void
+history_compress(char *wdir, const char *repo)
+{
+	char *p;
+	const char *q;
+	size_t repo_len, wdir_len;
+
+	repo_len = strlen(repo);
+	wdir_len = strlen(wdir);
+
+	p = wdir + wdir_len;
+	q = repo + repo_len;
+
+	while (p >= wdir && q >= repo) {
+		if (*p != *q)
+			break;
+		p--;
+		q--;
+	}
+	p++;
+	q++;
+
+	/* if it's not worth the effort, skip compression */
+	if (repo + repo_len - q < 3)
+		return;
+
+	(void)xsnprintf(p, strlen(p) + 1, "*%zx", q - repo);
+}
 
 int
 cvs_history(int argc, char **argv)
 {
 	int ch, flags;
-	u_int nbmod, rep;
-	char *user, *zone, *tag, *cp;
-	char *modules[CVS_HISTORY_MAXMOD], histpath[MAXPATHLEN];
-	struct cvs_hent *hent;
-	CVSHIST *hp;
 
-	tag = NULL;
-	user = NULL;
-	zone = "+0000";
-	nbmod = 0;
 	flags = 0;
-	rep = 0;
 
-	while ((ch = getopt(argc, argv, "acelm:oTt:u:wx:z:")) != -1) {
+	while ((ch = getopt(argc, argv, cvs_cmd_history.cmd_opts)) != -1) {
 		switch (ch) {
 		case 'a':
-			flags |= CVS_HF_A;
+			flags |= HISTORY_ALL_USERS;
 			break;
 		case 'c':
-			rep++;
-			flags |= CVS_HF_C;
-			break;
-		case 'e':
-			rep++;
-			flags |= CVS_HF_E;
-			break;
-		case 'l':
-			flags |= CVS_HF_L;
-			break;
-		case 'm':
-			rep++;
-			flags |= CVS_HF_M;
-			if (nbmod == CVS_HISTORY_MAXMOD) {
-				cvs_log(LP_ERR, "too many `-m' options");
-				return (EX_USAGE);
-			}
-			modules[nbmod++] = optarg;
-			break;
-		case 'o':
-			rep++;
-			flags |= CVS_HF_O;
-			break;
-		case 'T':
-			rep++;
-			flags |= CVS_HF_T;
-			break;
-		case 't':
-			tag = optarg;
-			break;
-		case 'u':
-			user = optarg;
-			break;
-		case 'w':
-			flags |= CVS_HF_W;
-			break;
-		case 'x':
-			rep++;
-			for (cp = optarg; *cp != '\0'; cp++) {
-			}
-			break;
-		case 'z':
-			zone = optarg;
+			flags |= HISTORY_DISPLAY_ARCHIVED;
 			break;
 		default:
-			return (EX_USAGE);
+			fatal("%s", cvs_cmd_history.cmd_synopsis);
 		}
 	}
 
-	if (rep > 1) {
-		cvs_log(LP_ERR,
-		    "Only one report type allowed from: \"-Tcomxe\"");
-		return (EX_USAGE);
-	}
-	else if (rep == 0)
-		flags |= CVS_HF_O;    /* use -o as default */
-
-	if (cvs_root->cr_method == CVS_METHOD_LOCAL) {
-		snprintf(histpath, sizeof(histpath), "%s/%s", cvs_root->cr_dir,
-		    CVS_PATH_HISTORY);
-		hp = cvs_hist_open(histpath);
-		if (hp == NULL) {
-			return (EX_UNAVAILABLE);
-		}
-
-		while ((hent = cvs_hist_getnext(hp)) != NULL) {
-			cvs_history_print(hent);
-		}
-		cvs_hist_close(hp);
-	}
-	else {
-		if (flags & CVS_HF_C)
-			cvs_client_sendarg("-c", 0);
-
-		if (flags & CVS_HF_O)
-			cvs_client_sendarg("-o", 0);
-
-		if (tag != NULL) {
-			cvs_client_sendarg("-t", 0);
-			cvs_client_sendarg(tag, 0);
-		}
-		if (user != NULL) {
-			cvs_client_sendarg("-u", 0);
-			cvs_client_sendarg(user, 0);
-		}
-
-
-		cvs_client_sendarg("-z", 0);
-		cvs_client_sendarg(zone, 0);
-
-		cvs_client_sendreq(CVS_REQ_HISTORY, NULL, 1);
-	}
+	argc -= optind;
+	argv += optind;
 
 	return (0);
-}
-
-
-static void
-cvs_history_print(struct cvs_hent *hent)
-{
-	struct tm etime;
-
-	if (localtime_r(&(hent->ch_date), &etime) == NULL) {
-		cvs_log(LP_ERROR, "failed to convert timestamp to structure");
-		return;
-	}
-
-	printf("%c %4d-%02d-%02d %02d:%02d +%04d %-16s %-16s\n",
-	    hent->ch_event, etime.tm_year + 1900, etime.tm_mon + 1,
-	    etime.tm_mday, etime.tm_hour, etime.tm_min,
-	    0, hent->ch_user, hent->ch_repo);
 }

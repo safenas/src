@@ -1,3 +1,5 @@
+#	$OpenBSD$
+
 update = 1;
 newplane = 4;
 width = 30;

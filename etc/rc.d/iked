@@ -1,0 +1,22 @@
+#!/bin/ksh
+#
+# $OpenBSD: iked,v 1.10 2022/09/04 06:57:13 ajacoutot Exp $
+
+daemon="/sbin/iked"
+
+. /etc/rc.d/rc.subr
+
+pexp="iked: parent.*"
+
+rc_configtest() {
+	# use rc_exec here since daemon_flags may contain arguments with spaces
+	rc_exec "${daemon} -n ${daemon_flags}"
+}
+
+rc_pre() {
+	if [[ ${sasyncd_flags} != NO ]]; then
+		daemon_flags="-S ${daemon_flags}"
+	fi
+}
+
+rc_cmd $1

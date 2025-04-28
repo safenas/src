@@ -1,16 +1,16 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: cvs.h,v 1.184 2017/06/01 08:08:24 joris Exp $	*/
 /*
  * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
- * All rights reserved. 
+ * All rights reserved.
  *
- * Redistribution and use in source and binary forms, with or without 
- * modification, are permitted provided that the following conditions 
- * are met: 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
  *
- * 1. Redistributions of source code must retain the above copyright 
- *    notice, this list of conditions and the following disclaimer. 
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
  * 2. The name of the author may not be used to endorse or promote products
- *    derived from this software without specific prior written permission. 
+ *    derived from this software without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
  * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
@@ -21,210 +21,180 @@
  * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
  * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
  * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef CVS_H
 #define CVS_H
 
-#include <sys/param.h>
+#include <signal.h>
 
-#include "rcs.h"
+#include "config.h"
+#include "file.h"
+#include "log.h"
+#include "worklist.h"
+#include "repository.h"
+#include "trigger.h"
+#include "util.h"
+#include "xmalloc.h"
 
-#define CVS_VERSION    "OpenCVS 0.1"
+#define CVS_VERSION	"OpenCVS 4.5"
 
+#define CVS_REV_BUFSZ	32
+#define CVS_TIME_BUFSZ	64
 
-#define CVS_HIST_CACHE     128
-#define CVS_HIST_NBFLD     6
-
-
-#define CVS_REQ_TIMEOUT    300
-
-
-
-#define CVS_CKSUM_LEN      33     /* length of a CVS checksum string */
-
+#define CVS_DATE_FMT	"%Y.%m.%d.%H.%M.%S"
 
 /* operations */
-#define CVS_OP_ADD          1
-#define CVS_OP_ANNOTATE     2
-#define CVS_OP_COMMIT       3
-#define CVS_OP_DIFF         4
-#define CVS_OP_TAG          5
-#define CVS_OP_UPDATE       6
-
-
-
+#define CVS_OP_UNKNOWN		0
+#define CVS_OP_ADD		1
+#define CVS_OP_ADMIN		2
+#define CVS_OP_ANNOTATE		3
+#define CVS_OP_CHECKOUT		4
+#define CVS_OP_COMMIT		5
+#define CVS_OP_DIFF		6
+#define CVS_OP_EDIT		7
+#define CVS_OP_EDITORS		8
+#define CVS_OP_EXPORT		9
+#define CVS_OP_HISTORY		10
+#define CVS_OP_IMPORT		11
+#define CVS_OP_INIT		12
+#define CVS_OP_LOG		13
+#define CVS_OP_RANNOTATE	14
+#define CVS_OP_RDIFF		15
+#define CVS_OP_RELEASE		16
+#define CVS_OP_REMOVE		17
+#define CVS_OP_RLOG		18
+#define CVS_OP_RTAG		19
+#define CVS_OP_SERVER		20
+#define CVS_OP_STATUS		21
+#define CVS_OP_TAG		22
+#define CVS_OP_UNEDIT		23
+#define CVS_OP_UPDATE		24
+#define CVS_OP_VERSION		25
+#define CVS_OP_WATCH		26
+#define CVS_OP_WATCHERS		27
 
 /* methods */
-#define CVS_METHOD_NONE       0
-#define CVS_METHOD_LOCAL      1    /* local access */
-#define CVS_METHOD_SERVER     2    /* tunnel through CVS_RSH */
-#define CVS_METHOD_PSERVER    3    /* cvs pserver */
-#define CVS_METHOD_KSERVER    4    /* kerberos */
-#define CVS_METHOD_GSERVER    5    /* gssapi server */
-#define CVS_METHOD_EXT        6
-#define CVS_METHOD_FORK       7    /* local but fork */
+#define CVS_METHOD_NONE		0
+#define CVS_METHOD_LOCAL	1	/* local access */
+#define CVS_METHOD_SERVER	2	/* tunnel through CVS_RSH */
+#define CVS_METHOD_PSERVER	3	/* cvs pserver */
+#define CVS_METHOD_KSERVER	4	/* kerberos */
+#define CVS_METHOD_GSERVER	5	/* gssapi server */
+#define CVS_METHOD_EXT		6
+#define CVS_METHOD_FORK		7	/* local but fork */
 
-/* client/server protocol requests */
-#define CVS_REQ_NONE          0
-#define CVS_REQ_ROOT          1
-#define CVS_REQ_VALIDREQ      2
-#define CVS_REQ_VALIDRESP     3
-#define CVS_REQ_DIRECTORY     4
-#define CVS_REQ_MAXDOTDOT     5
-#define CVS_REQ_STATICDIR     6
-#define CVS_REQ_STICKY        7
-#define CVS_REQ_ENTRY         8
-#define CVS_REQ_ENTRYEXTRA    9
-#define CVS_REQ_CHECKINTIME  10
-#define CVS_REQ_MODIFIED     11
-#define CVS_REQ_ISMODIFIED   12
-#define CVS_REQ_UNCHANGED    13
-#define CVS_REQ_USEUNCHANGED 14
-#define CVS_REQ_NOTIFY       15
-#define CVS_REQ_NOTIFYUSER   16
-#define CVS_REQ_QUESTIONABLE 17
-#define CVS_REQ_CASE         18
-#define CVS_REQ_UTF8         19
-#define CVS_REQ_ARGUMENT     20
-#define CVS_REQ_ARGUMENTX    21
-#define CVS_REQ_GLOBALOPT    22
-#define CVS_REQ_GZIPSTREAM   23
-#define CVS_REQ_KERBENCRYPT  24
-#define CVS_REQ_GSSENCRYPT   25
-#define CVS_REQ_PROTOENCRYPT 26
-#define CVS_REQ_GSSAUTH      27
-#define CVS_REQ_PROTOAUTH    28
-#define CVS_REQ_READCVSRC2   29
-#define CVS_REQ_READWRAP     30
-#define CVS_REQ_ERRIFREADER  31
-#define CVS_REQ_VALIDRCSOPT  32
-#define CVS_REQ_READIGNORE   33
-#define CVS_REQ_SET          34
-#define CVS_REQ_XPANDMOD     35
-#define CVS_REQ_CI           36
-#define CVS_REQ_CHOWN        37
-#define CVS_REQ_SETOWN       38
-#define CVS_REQ_SETPERM      39
-#define CVS_REQ_CHACL        40
-#define CVS_REQ_LISTPERM     41
-#define CVS_REQ_LISTACL      42
-#define CVS_REQ_SETPASS      43
-#define CVS_REQ_PASSWD       44
-#define CVS_REQ_DIFF         45
-#define CVS_REQ_STATUS       46
-#define CVS_REQ_LS           47
-#define CVS_REQ_TAG          48
-#define CVS_REQ_IMPORT       49
-#define CVS_REQ_ADMIN        50
-#define CVS_REQ_HISTORY      51
-#define CVS_REQ_WATCHERS     52
-#define CVS_REQ_EDITORS      53
-#define CVS_REQ_ANNOTATE     54
-#define CVS_REQ_LOG          55
-#define CVS_REQ_CO           56
-#define CVS_REQ_EXPORT       57
-#define CVS_REQ_RANNOTATE    58
-#define CVS_REQ_INIT         59
-#define CVS_REQ_UPDATE       60
-#define CVS_REQ_ADD          62
-#define CVS_REQ_REMOVE       63
-#define CVS_REQ_NOOP         64
-#define CVS_REQ_RTAG         65
-#define CVS_REQ_RELEASE      66
-#define CVS_REQ_RLOG         67
-#define CVS_REQ_RDIFF        68
-#define CVS_REQ_VERSION      69
+#define CVS_CMD_MAXNAMELEN	16
+#define CVS_CMD_MAXALIAS	2
+#define CVS_CMD_MAXDESCRLEN	64
 
-#define CVS_REQ_MAX          69
-
-
-/* responses */
-#define CVS_RESP_OK           1
-#define CVS_RESP_ERROR        2
-#define CVS_RESP_VALIDREQ     3
-#define CVS_RESP_CHECKEDIN    4
-#define CVS_RESP_NEWENTRY     5
-#define CVS_RESP_CKSUM        6
-#define CVS_RESP_COPYFILE     7
-#define CVS_RESP_UPDATED      8
-#define CVS_RESP_CREATED      9
-#define CVS_RESP_UPDEXIST    10
-#define CVS_RESP_MERGED      11
-#define CVS_RESP_PATCHED     12
-#define CVS_RESP_RCSDIFF     13
-#define CVS_RESP_MODE        14
-#define CVS_RESP_MODTIME     15
-#define CVS_RESP_REMOVED     16
-#define CVS_RESP_RMENTRY     17
-#define CVS_RESP_SETSTATDIR  18
-#define CVS_RESP_CLRSTATDIR  19
-#define CVS_RESP_SETSTICKY   20
-#define CVS_RESP_CLRSTICKY   21
-#define CVS_RESP_TEMPLATE    22
-#define CVS_RESP_SETCIPROG   23
-#define CVS_RESP_SETUPDPROG  24
-#define CVS_RESP_NOTIFIED    25
-#define CVS_RESP_MODXPAND    26
-#define CVS_RESP_WRAPRCSOPT  27
-#define CVS_RESP_M           28
-#define CVS_RESP_MBINARY     29
-#define CVS_RESP_E           30
-#define CVS_RESP_F           31
-#define CVS_RESP_MT          32
-
-
-
-
-#define CVS_CMD_MAXNAMELEN   16
-#define CVS_CMD_MAXALIAS      2
-#define CVS_CMD_MAXDESCRLEN  64
-
+/* flags */
+#define CVS_USE_WDIR		0x01
+#define CVS_LOCK_REPO		0x02
 
 /* defaults */
-#define CVS_RSH_DEFAULT     "ssh"
-#define CVS_EDITOR_DEFAULT  "vi"
+#define CVS_SERVER_DEFAULT	"cvs"
+#define CVS_RSH_DEFAULT		"ssh"
+#define CVS_EDITOR_DEFAULT	"vi"
+#define CVS_TMPDIR_DEFAULT	"/tmp"
+#define CVS_UMASK_DEFAULT	002
 
+/* extensions */
+#define CVS_DESCR_FILE_EXT	",t"
 
 /* server-side paths */
-#define CVS_PATH_ROOT         "CVSROOT"
-#define CVS_PATH_COMMITINFO   CVS_PATH_ROOT "/commitinfo"
-#define CVS_PATH_CONFIG       CVS_PATH_ROOT "/config"
-#define CVS_PATH_CVSIGNORE    CVS_PATH_ROOT "/cvsignore"
-#define CVS_PATH_CVSWRAPPERS  CVS_PATH_ROOT "/cvswrappers"
-#define CVS_PATH_EDITINFO     CVS_PATH_ROOT "/editinfo"
-#define CVS_PATH_HISTORY      CVS_PATH_ROOT "/history"
-#define CVS_PATH_LOGINFO      CVS_PATH_ROOT "/loginfo"
-#define CVS_PATH_MODULES      CVS_PATH_ROOT "/modules"
-#define CVS_PATH_NOTIFY       CVS_PATH_ROOT "/notify"
-#define CVS_PATH_RCSINFO      CVS_PATH_ROOT "/rcsinfo"
-#define CVS_PATH_TAGINFO      CVS_PATH_ROOT "/taginfo"
-#define CVS_PATH_VERIFYMSG    CVS_PATH_ROOT "/verifymsg"
-
+#define CVS_PATH_DEVNULL	"/dev/null"
+#define CVS_PATH_ROOT		"CVSROOT"
+#define CVS_PATH_EMPTYDIR	CVS_PATH_ROOT "/Emptydir"
+#define CVS_PATH_CHECKOUTLIST	CVS_PATH_ROOT "/checkoutlist"
+#define CVS_PATH_COMMITINFO	CVS_PATH_ROOT "/commitinfo"
+#define CVS_PATH_CONFIG		CVS_PATH_ROOT "/config"
+#define CVS_PATH_CVSIGNORE	CVS_PATH_ROOT "/cvsignore"
+#define CVS_PATH_CVSWRAPPERS	CVS_PATH_ROOT "/cvswrappers"
+#define CVS_PATH_EDITINFO	CVS_PATH_ROOT "/editinfo"
+#define CVS_PATH_HISTORY	CVS_PATH_ROOT "/history"
+#define CVS_PATH_LOGINFO	CVS_PATH_ROOT "/loginfo"
+#define CVS_PATH_MODULES	CVS_PATH_ROOT "/modules"
+#define CVS_PATH_NOTIFY_R	CVS_PATH_ROOT "/notify"
+#define CVS_PATH_RCSINFO	CVS_PATH_ROOT "/rcsinfo"
+#define CVS_PATH_TAGINFO	CVS_PATH_ROOT "/taginfo"
+#define CVS_PATH_VALTAGS	CVS_PATH_ROOT "/val-tags"
+#define CVS_PATH_VERIFYMSG	CVS_PATH_ROOT "/verifymsg"
 
 /* client-side paths */
-#define CVS_PATH_RC             ".cvsrc"
-#define CVS_PATH_CVSDIR         "CVS"
-#define CVS_PATH_ENTRIES        CVS_PATH_CVSDIR "/Entries"
-#define CVS_PATH_STATICENTRIES  CVS_PATH_CVSDIR "/Entries.Static"
-#define CVS_PATH_LOGENTRIES     CVS_PATH_CVSDIR "/Entries.Log"
-#define CVS_PATH_ROOTSPEC       CVS_PATH_CVSDIR "/Root"
+#define CVS_PATH_RC		".cvsrc"
+#define CVS_PATH_CVSDIR		"CVS"
+#define CVS_PATH_BASEDIR	CVS_PATH_CVSDIR "/Base"
+#define CVS_PATH_BASEREV	CVS_PATH_CVSDIR "/Baserev"
+#define CVS_PATH_BASEREVTMP	CVS_PATH_CVSDIR "/Baserev.tmp"
+#define CVS_PATH_CHECKINPROG	CVS_PATH_CVSDIR "/Checkin.prog"
+#define CVS_PATH_ENTRIES	CVS_PATH_CVSDIR "/Entries"
+#define CVS_PATH_STATICENTRIES	CVS_PATH_CVSDIR "/Entries.Static"
+#define CVS_PATH_LOGENTRIES	CVS_PATH_CVSDIR "/Entries.Log"
+#define CVS_PATH_BACKUPENTRIES	CVS_PATH_CVSDIR "/Entries.Backup"
+#define CVS_PATH_NOTIFY		CVS_PATH_CVSDIR "/Notify"
+#define CVS_PATH_NOTIFYTMP	CVS_PATH_CVSDIR "/Notify.tmp"
+#define CVS_PATH_ROOTSPEC	CVS_PATH_CVSDIR "/Root"
+#define CVS_PATH_REPOSITORY	CVS_PATH_CVSDIR "/Repository"
+#define CVS_PATH_TAG		CVS_PATH_CVSDIR "/Tag"
+#define CVS_PATH_TEMPLATE	CVS_PATH_CVSDIR "/Template"
+#define CVS_PATH_UPDATEPROG	CVS_PATH_CVSDIR "/Update.prog"
+#define CVS_PATH_ATTIC		"Attic"
 
+/* history stuff */
+#define CVS_HISTORY_TAG			0
+#define CVS_HISTORY_CHECKOUT		1
+#define CVS_HISTORY_EXPORT		2
+#define CVS_HISTORY_RELEASE		3
+#define CVS_HISTORY_UPDATE_REMOVE	4
+#define CVS_HISTORY_UPDATE_CO		5
+#define CVS_HISTORY_UPDATE_MERGED	6
+#define CVS_HISTORY_UPDATE_MERGED_ERR	7
+#define CVS_HISTORY_COMMIT_MODIFIED	8
+#define CVS_HISTORY_COMMIT_ADDED	9
+#define CVS_HISTORY_COMMIT_REMOVED	10
 
-struct cvs_op {
-	u_int  co_op;
-	uid_t  co_uid;    /* user performing the operation */
-	char  *co_path;   /* target path of the operation */
-	char  *co_tag;    /* tag or branch, NULL if HEAD */
+void	cvs_history_add(int, struct cvs_file *, const char *);
+
+struct cvs_cmd {
+	u_int	 cmd_op;
+	u_int	 cmd_flags;
+	char	 cmd_name[CVS_CMD_MAXNAMELEN];
+	char	 cmd_alias[CVS_CMD_MAXALIAS][CVS_CMD_MAXNAMELEN];
+	char	 cmd_descr[CVS_CMD_MAXDESCRLEN];
+	char	*cmd_synopsis;
+	char	*cmd_opts;
+	char	*cmd_defargs;
+
+	int	(*cmd)(int, char **);
 };
 
+struct cvsroot;
 
+struct cvs_recursion {
+	void	(*enterdir)(struct cvs_file *);
+	void	(*leavedir)(struct cvs_file *);
+	void	(*fileproc)(struct cvs_file *);
+	int	flags;
+};
 
+#define CR_RECURSE_DIRS		0x01
+#define CR_ATTIC		0x02
+#define CR_REPO			0x04
 
+struct cvs_var {
+	char   *cv_name;
+	char   *cv_val;
+	TAILQ_ENTRY(cvs_var) cv_link;
+};
 
+extern TAILQ_HEAD(cvs_varhead, cvs_var) cvs_variables;
+
+#define CVS_ROOT_CONNECTED	0x01
 
 struct cvsroot {
+	char   *cr_str;
 	u_int   cr_method;
 	char   *cr_buf;
 	char   *cr_user;
@@ -232,143 +202,225 @@ struct cvsroot {
 	char   *cr_host;
 	char   *cr_dir;
 	u_int   cr_port;
+
+	/* connection data */
+	FILE   *cr_srvin;
+	FILE   *cr_srvout;
+	FILE   *cr_srverr;
 };
 
+#define CVS_HIST_ADDED		'A'
+#define CVS_HIST_EXPORT		'E'
+#define CVS_HIST_RELEASE	'F'
+#define CVS_HIST_MODIFIED	'M'
+#define CVS_HIST_CHECKOUT	'O'
+#define CVS_HIST_COMMIT		'R'
+#define CVS_HIST_TAG		'T'
 
-#define CVS_HIST_ADDED    'A'
-#define CVS_HIST_EXPORT   'E'
-#define CVS_HIST_RELEASE  'F'
-#define CVS_HIST_MODIFIED 'M'
-#define CVS_HIST_CHECKOUT 'O'
-#define CVS_HIST_COMMIT   'R'
-#define CVS_HIST_TAG      'T'
+#define CVS_DATE_DUMMY	"dummy timestamp"
+#define CVS_DATE_DMSEC	(time_t)-1
 
+#define CVS_ENT_NONE	0
+#define CVS_ENT_FILE	1
+#define CVS_ENT_DIR	2
 
-#define CVS_ENT_NONE    0
-#define CVS_ENT_FILE    1
-#define CVS_ENT_DIR     2
+#define CVS_ENT_REG		0
+#define CVS_ENT_ADDED		1
+#define CVS_ENT_REMOVED		2
+#define CVS_ENT_UPTODATE	3
+#define CVS_ENT_UNKNOWN		4
 
+#define CVS_ENT_MAXLINELEN	1024
+
+#define ENT_NOSYNC	0
+#define ENT_SYNC	1
+
+#define STRIP_SLASH(p)					\
+	do {						\
+		size_t _slen;				\
+		_slen = strlen(p);			\
+		while ((_slen > 0) && (p[_slen - 1] == '/'))	\
+			p[--_slen] = '\0';		\
+	} while (0)
 
 struct cvs_ent {
-	char    *ce_line;
-	char    *ce_buf;
-	u_int    ce_type;
-	char    *ce_name;
-	RCSNUM  *ce_rev;
-	char    *ce_timestamp;
-	char    *ce_opts;
-	char    *ce_tag;
+	char		*ce_buf;
+	char		*ce_conflict;
+	char		*ce_name;
+	char		*ce_opts;
+	char		*ce_tag;
+	char		*ce_time;
+	time_t		 ce_date;
+	time_t		 ce_mtime;
+	u_int16_t	 ce_type;
+	u_int16_t	 ce_status;
+	RCSNUM		*ce_rev;
+};
+
+struct cvs_ent_line {
+	char	*buf;
+	TAILQ_ENTRY(cvs_ent_line) entries_list;
 };
 
 typedef struct cvs_entries {
-	char    *cef_path;
+	char	*cef_path;
+	char	*cef_bpath;
+	char	*cef_lpath;
 
-	u_int    cef_nid;  /* next entry index to return for next() */
-
-	struct cvs_ent **cef_entries;
-	u_int            cef_nbent;
+	TAILQ_HEAD(, cvs_ent_line)	 cef_ent;
 } CVSENTRIES;
 
+extern char *checkout_target_dir;
+extern char *cvs_join_rev1;
+extern char *cvs_join_rev2;
+extern int   backup_local_changes;
+
+extern struct module_checkout *current_module;
+extern char *module_repo_root;
+
+extern struct ignore_head checkout_ign_pats;
+extern struct wklhead temp_files;
+extern volatile sig_atomic_t sig_received;
+extern volatile sig_atomic_t cvs_quit;
+extern struct cvsroot *current_cvsroot;
+extern char *cvs_tagname;
+extern char *cvs_editor;
+extern char *cvs_homedir;
+extern char *cvs_rsh;
+extern char *cvs_tmpdir;
+extern char *import_repository;
+extern char *cvs_server_path;
+extern time_t cvs_specified_date;
+extern time_t cvs_directory_date;
+extern char *cvs_specified_tag;
+extern char *cvs_directory_tag;
+
+extern int  cvs_umask;
+extern int  verbosity;
+extern int  cvs_trace;
+extern int  cvs_nolog;
+extern int  cvs_compress;
+extern int  cvs_cmdop;
+extern int  cvs_nocase;
+extern int  cvs_noexec;
+extern int  cvs_readonly;
+extern int  cvs_readonlyfs;
+extern int  cvs_server_active;
+extern int  reset_option;
+extern int  reset_tag;
+extern int  kflag;
+
+extern struct cvs_cmd *cmdp;
+extern struct cvs_cmd *cvs_cdt[];
+
+extern struct cvs_cmd cvs_cmd_add;
+extern struct cvs_cmd cvs_cmd_admin;
+extern struct cvs_cmd cvs_cmd_annotate;
+extern struct cvs_cmd cvs_cmd_checkout;
+extern struct cvs_cmd cvs_cmd_commit;
+extern struct cvs_cmd cvs_cmd_diff;
+extern struct cvs_cmd cvs_cmd_edit;
+extern struct cvs_cmd cvs_cmd_editors;
+extern struct cvs_cmd cvs_cmd_export;
+extern struct cvs_cmd cvs_cmd_history;
+extern struct cvs_cmd cvs_cmd_import;
+extern struct cvs_cmd cvs_cmd_init;
+extern struct cvs_cmd cvs_cmd_log;
+extern struct cvs_cmd cvs_cmd_rannotate;
+extern struct cvs_cmd cvs_cmd_rdiff;
+extern struct cvs_cmd cvs_cmd_release;
+extern struct cvs_cmd cvs_cmd_remove;
+extern struct cvs_cmd cvs_cmd_rlog;
+extern struct cvs_cmd cvs_cmd_rtag;
+extern struct cvs_cmd cvs_cmd_status;
+extern struct cvs_cmd cvs_cmd_tag;
+extern struct cvs_cmd cvs_cmd_update;
+extern struct cvs_cmd cvs_cmd_version;
+extern struct cvs_cmd cvs_cmd_server;
+extern struct cvs_cmd cvs_cmd_unedit;
+extern struct cvs_cmd cvs_cmd_watch;
+extern struct cvs_cmd cvs_cmd_watchers;
+
+/* add.c */
+void		 cvs_add_tobranch(struct cvs_file *, char *);
+
+/* cmd.c */
+struct cvs_cmd	*cvs_findcmd(const char *);
+
+/* cvs.c */
+int		 cvs_build_cmd(char ***, char **, int);
+int		 cvs_var_set(const char *, const char *);
+int		 cvs_var_unset(const char *);
+const char	*cvs_var_get(const char *);
+void		 cvs_cleanup(void);
+
+/* date.y */
+time_t		 date_parse(const char *);
+
+/* entries.c */
+struct cvs_ent	*cvs_ent_parse(const char *);
+struct cvs_ent	*cvs_ent_get(CVSENTRIES *, const char *);
+CVSENTRIES	*cvs_ent_open(const char *);
+void		cvs_ent_add(CVSENTRIES *, const char *);
+void		cvs_ent_remove(CVSENTRIES *, const char *);
+void		cvs_ent_close(CVSENTRIES *, int);
+void		cvs_ent_free(struct cvs_ent *);
+void		cvs_ent_line_str(const char *, char *, char *, char *, char *,
+		    int, int, char *, size_t);
+void		cvs_parse_tagfile(char *, char **, char **, int *);
+void		cvs_write_tagfile(const char *, char *, char *);
+
+/* root.c */
+struct cvsroot	*cvsroot_get(const char *);
+int		cvsroot_is_local(void);
+int		cvsroot_is_remote(void);
+
+/* logmsg.c */
+char	*cvs_logmsg_read(const char *);
+char	*cvs_logmsg_create(char *, struct cvs_flisthead *,
+	     struct cvs_flisthead *, struct cvs_flisthead *);
+int	 cvs_logmsg_verify(char *);
+
+/* misc stuff */
+void	cvs_update_local(struct cvs_file *);
+void	cvs_update_enterdir(struct cvs_file *);
+void	cvs_update_leavedir(struct cvs_file *);
+void	cvs_checkout_file(struct cvs_file *, RCSNUM *, char *, int);
+void	cvs_remove_local(struct cvs_file *);
+void	cvs_add_local(struct cvs_file *);
+int	update_has_conflict_markers(struct cvs_file *);
+void	cvs_backup_file(struct cvs_file *);
+void	cvs_import_ignored(const char *);
+
+#define CO_MERGE	0x01
+#define CO_SETSTICKY	0x02
+#define CO_DUMP		0x04
+#define CO_COMMIT	0x08
+#define CO_REMOVE	0x10
+
+/* commands */
+int	cvs_add(int, char **);
+int	cvs_admin(int, char **);
+int	cvs_annotate(int, char **);
+int	cvs_checkout(int, char **);
+int	cvs_commit(int, char **);
+int	cvs_diff(int, char **);
+int	cvs_edit(int, char **);
+int	cvs_editors(int, char **);
+int	cvs_export(int, char **);
+int	cvs_getlog(int, char **);
+int	cvs_history(int, char **);
+int	cvs_import(int, char **);
+int	cvs_init(int, char **);
+int	cvs_release(int, char **);
+int	cvs_remove(int, char **);
+int	cvs_status(int, char **);
+int	cvs_tag(int, char **);
+int	cvs_unedit(int, char **);
+int	cvs_update(int, char **);
+int	cvs_version(int, char **);
+int	cvs_watch(int, char **);
+int	cvs_watchers(int, char **);
 
 
-struct cvs_hent {
-	char    ch_event;
-	time_t  ch_date;
-	uid_t   ch_uid;
-	char   *ch_user;
-	char   *ch_curdir;
-	char   *ch_repo;
-	RCSNUM *ch_rev;
-	char   *ch_arg;
-};
-
-
-typedef struct cvs_histfile {
-	int     chf_fd;
-	char   *chf_buf;       /* read buffer */
-	size_t  chf_blen;      /* buffer size */
-	size_t  chf_bused;     /* bytes used in buffer */
-
-	off_t   chf_off;       /* next read */
-	u_int   chf_sindex;    /* history entry index of first in array */
-	u_int   chf_cindex;    /* current index (for getnext()) */
-	u_int   chf_nbhent;    /* number of valid entries in the array */
-
-	struct cvs_hent chf_hent[CVS_HIST_CACHE];
-
-} CVSHIST;
-
-
-
-/* client command handlers */
-int  cvs_add      (int, char **);
-int  cvs_commit   (int, char **);
-int  cvs_diff     (int, char **);
-int  cvs_getlog   (int, char **);
-int  cvs_history  (int, char **);
-int  cvs_init     (int, char **);
-int  cvs_server   (int, char **);
-int  cvs_update   (int, char **);
-int  cvs_version  (int, char **);
-
-
-/* proto.c */
-int         cvs_req_handle     (char *);
-const char* cvs_req_getbyid    (int);
-int         cvs_req_getbyname  (const char *);
-char*       cvs_req_getvalid   (void);
-
-int         cvs_resp_handle    (char *);
-const char* cvs_resp_getbyid   (int);
-int         cvs_resp_getbyname (const char *);
-char*       cvs_resp_getvalid  (void);
-
-int         cvs_sendfile       (const char *);
-int         cvs_recvfile       (const char *);
-
-
-/* from client.c */
-int     cvs_client_connect     (void);
-void    cvs_client_disconnect  (void);
-int     cvs_client_sendreq     (u_int, const char *, int);
-int     cvs_client_sendarg     (const char *, int);
-int     cvs_client_sendln      (const char *);
-int     cvs_client_sendraw     (const void *, size_t);
-ssize_t cvs_client_recvraw     (void *, size_t);
-int     cvs_client_getln       (char *, size_t);
-int     cvs_client_senddir     (const char *);
-
-
-/* from root.c */
-struct cvsroot*  cvsroot_parse (const char *);
-void             cvsroot_free  (struct cvsroot *);
-struct cvsroot*  cvsroot_get   (const char *);
-
-
-/* Entries API */
-CVSENTRIES*      cvs_ent_open   (const char *);
-struct cvs_ent*  cvs_ent_get    (CVSENTRIES *, const char *);
-struct cvs_ent*  cvs_ent_next   (CVSENTRIES *);
-int              cvs_ent_add    (CVSENTRIES *, struct cvs_ent *);
-int              cvs_ent_remove (CVSENTRIES *, const char *);
-struct cvs_ent*  cvs_ent_parse  (const char *);
-void             cvs_ent_close  (CVSENTRIES *);
-
-/* history API */
-CVSHIST*         cvs_hist_open    (const char *);
-void             cvs_hist_close   (CVSHIST *);
-int              cvs_hist_parse   (CVSHIST *);
-struct cvs_hent* cvs_hist_getnext (CVSHIST *);
-int              cvs_hist_append  (CVSHIST *, struct cvs_hent *);
-
-
-/* from util.c */
-int    cvs_readrepo   (const char *, char *, size_t);
-int    cvs_splitpath  (const char *, char *, size_t, char *, size_t);
-int    cvs_modetostr  (mode_t, char *, size_t);
-int    cvs_strtomode  (const char *, mode_t *);
-int    cvs_cksum      (const char *, char *, size_t);
-int    cvs_exec       (int, char **, int []);
-
-
-#endif /* CVS_H */
+#endif

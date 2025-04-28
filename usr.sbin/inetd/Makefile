@@ -1,8 +1,8 @@
-#	from: @(#)Makefile	5.5 (Berkeley) 6/29/90
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:47:36 deraadt Exp $
+#	$OpenBSD: Makefile,v 1.4 2014/10/29 03:33:14 dlg Exp $
 
 PROG=	inetd
+LDADD=	-levent
+DPADD=	${LIBEVENT}
 MAN=	inetd.8
-MLINKS=	inetd.8 inetd.5
 
 .include <bsd.prog.mk>

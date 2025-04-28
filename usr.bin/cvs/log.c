@@ -1,6 +1,7 @@
-/*	$OpenBSD$	*/
+/*	$OpenBSD: log.c,v 1.46 2011/12/27 13:59:01 nicm Exp $	*/
 /*
- * Copyright (c) 2004 Jean-Francois Brousseau <jfb@fugusec.net>
+ * Copyright (c) 2006 Joris Vink <joris@openbsd.org>
+ * Copyright (c) 2004 Jean-Francois Brousseau <jfb@openbsd.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -24,153 +25,13 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/types.h>
-
 #include <errno.h>
-#include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <stdarg.h>
-#include <syslog.h>
+#include <string.h>
 
-#include "log.h"
+#include "cvs.h"
 
 extern char *__progname;
-
-static char *cvs_log_levels[] = {
-	"debug",
-	"info",
-	"notice",
-	"warning",
-	"error",
-	"alert",
-	"error"
-};
-
-
-static int cvs_slpriomap[] = {
-	LOG_DEBUG,
-	LOG_INFO,
-	LOG_NOTICE,
-	LOG_WARNING,
-	LOG_ERR,
-	LOG_ALERT,
-	LOG_ERR,
-};
-
-
-
-static u_int cvs_log_dest = LD_STD;
-static u_int cvs_log_flags = 0;
-
-static u_int cvs_log_filters[LP_MAX + 1];
-#define NB_FILTERS  sizeof(cvs_log_filters)/sizeof(cvs_log_filters[0])
-
-
-static struct syslog_data cvs_sl;
-
-
-/*
- * cvs_log_init()
- *
- * Initialize the logging facility of the server.
- * Returns 0 on success, or -1 on failure.
- */
-
-int
-cvs_log_init(u_int dest, u_int flags)
-{
-	int slopt;
-
-	cvs_log_dest = dest;
-	cvs_log_flags = flags;
-
-	/* by default, filter only LP_DEBUG and LP_INFO levels */
-	memset(cvs_log_filters, 0, sizeof(cvs_log_filters));
-	cvs_log_filters[LP_DEBUG] = 1;
-	cvs_log_filters[LP_INFO] = 1;
-
-	if (dest & LD_SYSLOG) {
-		slopt = 0;
-
-		if (dest & LD_CONS)
-			slopt |= LOG_CONS;
-		if (flags & LF_PID)
-			slopt |= LOG_PID;
-
-		openlog_r(__progname, slopt, LOG_DAEMON, &cvs_sl);
-	}
-
-	return (0);
-}
-
-
-/*
- * cvs_log_cleanup()
- *
- * Cleanup the logging facility.
- */
-
-void
-cvs_log_cleanup(void)
-{
-	closelog_r(&cvs_sl);
-
-}
-
-
-/*
- * cvs_log_filter()
- *
- * Apply or remove filters on the logging facility.  The exact operation is
- * specified by the <how> and <level> arguments.  The <how> arguments tells
- * how the filters will be affected, and <level> gives the log levels that
- * will be affected by the change.
- * Returns 0 on success, or -1 on failure.
- */
-
-int
-cvs_log_filter(u_int how, u_int level)
-{
-	u_int i;
-
-	if ((level > LP_MAX) && (level != LP_ALL)) {
-		cvs_log(LP_ERR, "invalid log level for filter");
-		return (-1);
-	}
-
-	switch (how) {
-	case LP_FILTER_SET:
-		if (level == LP_ALL)
-			for (i = 0; i < NB_FILTERS; i++)
-				cvs_log_filters[i] = 1;
-		else
-			cvs_log_filters[level] = 1;
-		break;
-	case LP_FILTER_UNSET:
-		if (level == LP_ALL)
-			for (i = 0; i < NB_FILTERS; i++)
-				cvs_log_filters[i] = 0;
-		else
-			cvs_log_filters[level] = 0;
-		break;
-	case LP_FILTER_TOGGLE:
-		if (level == LP_ALL)
-			for (i = 0; i < NB_FILTERS; i++)
-				cvs_log_filters[i] =
-				    (cvs_log_filters[i] == 0) ? 1 : 0;
-		else
-			cvs_log_filters[level] =
-			    (cvs_log_filters[level] == 0) ? 1 : 0;
-		break;
-	default:
-		return (-1);
-	}
-
-	return (0);
-}
-
 
 /*
  * cvs_log()
@@ -179,20 +40,15 @@ cvs_log_filter(u_int how, u_int level)
  * The <fmt> argument should not have a terminating newline, as this is taken
  * care of by the logging facility.
  */
-
-int
+void
 cvs_log(u_int level, const char *fmt, ...)
 {
-	int ret;
 	va_list vap;
 
 	va_start(vap, fmt);
-	ret = cvs_vlog(level, fmt, vap);
+	cvs_vlog(level, fmt, vap);
 	va_end(vap);
-
-	return (ret);
 }
-
 
 /*
  * cvs_vlog()
@@ -200,55 +56,115 @@ cvs_log(u_int level, const char *fmt, ...)
  * The <fmt> argument should not have a terminating newline, as this is taken
  * care of by the logging facility.
  */
-
-int
+void
 cvs_vlog(u_int level, const char *fmt, va_list vap)
 {
 	int ecp;
-	pid_t pid;
-	char prefix[64], buf[1024], ebuf[32];
 	FILE *out;
+	char *cmdname;
 
-	ecp = 0;
-
-	if (level > LP_MAX) {
-		return (-1);
-	}
-
-	/* apply any filters */
-	if (cvs_log_filters[level] == 1)
-		return (0);
+	if (cvs_trace != 1 && level == LP_TRACE)
+		return;
 
 	if (level == LP_ERRNO)
 		ecp = errno;
+	else
+		ecp = 0;
 
-	strlcpy(prefix, __progname, sizeof(prefix));
-	if (cvs_log_flags & LF_PID) {
-		snprintf(buf, sizeof(buf), "[%d]", (int)getpid());
-		strlcat(prefix, buf, sizeof(prefix));
-	}
+	if (level == LP_NOTICE)
+		out = stdout;
+	else
+		out = stderr;
 
-	vsnprintf(buf, sizeof(buf), fmt, vap);
-	if (level == LP_ERRNO) {
-		snprintf(ebuf, sizeof(ebuf), ": %s", strerror(errno));
-		strlcat(buf, ebuf, sizeof(buf));
-	}
-
-	if (cvs_log_dest & LD_STD) {
-		if (level <= LP_NOTICE)
+	if (cvs_server_active) {
+		if (out == stdout)
+			putc('M', out);
+		else {
 			out = stdout;
-		else
-			out = stderr;
+			putc('E', out);
+		}
 
-		fprintf(out, "%s: %s\n", prefix, buf);
+		putc(' ', out);
 	}
 
-	if (cvs_log_dest & LD_SYSLOG)
-		syslog_r(cvs_slpriomap[level], &cvs_sl, "%s", buf);
+	cmdname = (cmdp != NULL) ? cmdp->cmd_name : __progname;
 
-	/* preserve it just in case we changed it? */
-	if (level == LP_ERRNO)
+	/* The cvs program appends the command name to the program name */
+	if (level == LP_TRACE) {
+		if (cvs_server_active)
+			putc('S', out);
+		else
+			putc('C', out);
+		(void)fputs("-> ", out);
+	} else if (level != LP_RCS) {
+		(void)fputs(__progname, out);
+		putc(' ', out);
+		if (level == LP_ABORT)
+			(void)fprintf(out,
+			    "[%s aborted]", cmdname);
+		else
+			(void)fputs(cmdname, out);
+		(void)fputs(": ", out);
+	}
+
+	(void)vfprintf(out, fmt, vap);
+	if (level == LP_ERRNO) {
+		(void)fprintf(out, ": %s\n", strerror(ecp));
+
+		/* preserve it just in case we changed it? */
 		errno = ecp;
+	} else
+		fputc('\n', out);
+}
 
-	return (0);
+/*
+ * cvs_printf()
+ *
+ * Wrapper function around printf() that prepends a 'M' command when
+ * the program is acting as server.
+ */
+int
+cvs_printf(const char *fmt, ...)
+{
+	static int send_m = 1;
+	int ret;
+	char *nstr, *dp, *sp;
+	va_list vap;
+
+	va_start(vap, fmt);
+
+	ret = vasprintf(&nstr, fmt, vap);
+	if (ret == -1)
+		fatal("cvs_printf: could not allocate memory");
+
+	for (dp = nstr; *dp != '\0';) {
+		sp = strchr(dp, '\n');
+		if (sp == NULL)
+			for (sp = dp; *sp != '\0'; sp++)
+				;
+
+		if (cvs_server_active && send_m) {
+			send_m = 0;
+			putc('M', stdout);
+			putc(' ', stdout);
+		}
+
+		if (dp != nstr && dp != sp &&
+		    !strncmp(dp, LOG_REVSEP, sp - dp))
+			putc('>', stdout);
+
+		fwrite(dp, sizeof(char), (size_t)(sp - dp), stdout);
+
+		if (*sp != '\n')
+			break;
+
+		putc('\n', stdout);
+		send_m = 1;
+		dp = sp + 1;
+	}
+
+	free(nstr);
+	va_end(vap);
+
+	return (ret);
 }

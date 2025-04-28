@@ -1,5 +1,5 @@
 /* termdep.h -- system things that terminal.c depends on.
-   $Id: termdep.h,v 1.1.1.6 2006/07/17 16:03:44 espie Exp $
+   $Id: termdep.h,v 1.5 2006/07/17 16:12:36 espie Exp $
 
    Copyright (C) 1993, 1996, 1997, 1998, 2001, 2002 Free Software
    Foundation, Inc.

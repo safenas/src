@@ -1,25 +1,25 @@
-/* crypto/rsa/rsa_pk1.c */
+/* $OpenBSD: rsa_pk1.c,v 1.16 2023/07/08 12:26:45 beck Exp $ */
 /* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
  * All rights reserved.
  *
  * This package is an SSL implementation written
  * by Eric Young (eay@cryptsoft.com).
  * The implementation was written so as to conform with Netscapes SSL.
- * 
+ *
  * This library is free for commercial and non-commercial use as long as
  * the following conditions are aheared to.  The following conditions
  * apply to all code found in this distribution, be it the RC4, RSA,
  * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
  * included with this distribution is covered by the same copyright terms
  * except that the holder is Tim Hudson (tjh@cryptsoft.com).
- * 
+ *
  * Copyright remains Eric Young's, and as such any Copyright notices in
  * the code are not to be removed.
  * If this package is used in a product, Eric Young should be given attribution
  * as the author of the parts of the library used.
  * This can be in the form of a textual message at program startup or
  * in documentation (online or textual) provided with the package.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -34,10 +34,10 @@
  *     Eric Young (eay@cryptsoft.com)"
  *    The word 'cryptographic' can be left out if the rouines from the library
  *    being used are not cryptographic related :-).
- * 4. If you include any Windows specific code (or a derivative thereof) from 
+ * 4. If you include any Windows specific code (or a derivative thereof) from
  *    the apps directory (application code) you must include an acknowledgement:
  *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -49,7 +49,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- * 
+ *
  * The licence and distribution terms for any publically available version or
  * derivative of this code cannot be changed.  i.e. this code cannot simply be
  * copied and put under another distribution licence
@@ -57,168 +57,227 @@
  */
 
 #include <stdio.h>
-#include "cryptlib.h"
+#include <stdlib.h>
+#include <string.h>
+
 #include <openssl/bn.h>
+#include <openssl/err.h>
 #include <openssl/rsa.h>
-#include <openssl/rand.h>
 
-int RSA_padding_add_PKCS1_type_1(unsigned char *to, int tlen,
-	     const unsigned char *from, int flen)
-	{
-	int j;
-	unsigned char *p;
+#include "bytestring.h"
 
-	if (flen > (tlen-RSA_PKCS1_PADDING_SIZE))
-		{
-		RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_TYPE_1,RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
-		return(0);
-		}
-	
-	p=(unsigned char *)to;
+int
+RSA_padding_add_PKCS1_type_1(unsigned char *to, int tlen,
+    const unsigned char *from, int flen)
+{
+	CBB cbb;
+	int i;
+	int ret = 0;
 
-	*(p++)=0;
-	*(p++)=1; /* Private Key BT (Block Type) */
+	/*
+	 * Pad data block with PKCS1 type 1 padding - RFC 2313, section 8.1.
+	 */
 
-	/* pad out with 0xff data */
-	j=tlen-3-flen;
-	memset(p,0xff,j);
-	p+=j;
-	*(p++)='\0';
-	memcpy(p,from,(unsigned int)flen);
-	return(1);
+	memset(&cbb, 0, sizeof(cbb));
+
+	if (flen < 0 || tlen < 0)
+		goto err;
+
+	if (flen > tlen - RSA_PKCS1_PADDING_SIZE) {
+		RSAerror(RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
+		goto err;
 	}
 
-int RSA_padding_check_PKCS1_type_1(unsigned char *to, int tlen,
-	     const unsigned char *from, int flen, int num)
-	{
-	int i,j;
+	if (!CBB_init_fixed(&cbb, to, tlen))
+		goto err;
+
+	/*
+	 * Add leading NUL, block type (0x01), padding bytes (0xff) and
+	 * trailing NUL.
+	 */
+	if (!CBB_add_u8(&cbb, 0))
+		goto err;
+	if (!CBB_add_u8(&cbb, 1))
+		goto err;
+	for (i = 0; i < tlen - 3 - flen; i++) {
+		if (!CBB_add_u8(&cbb, 0xff))
+			goto err;
+	}
+	if (!CBB_add_u8(&cbb, 0))
+		goto err;
+
+	/* Now add the actual data. */
+	if (!CBB_add_bytes(&cbb, from, flen))
+		goto err;
+
+	if (!CBB_finish(&cbb, NULL, NULL))
+		goto err;
+
+	ret = 1;
+
+ err:
+	CBB_cleanup(&cbb);
+
+	return ret;
+}
+LCRYPTO_ALIAS(RSA_padding_add_PKCS1_type_1);
+
+int
+RSA_padding_check_PKCS1_type_1(unsigned char *to, int tlen,
+    const unsigned char *from, int flen, int num)
+{
+	int i, j;
 	const unsigned char *p;
 
-	p=from;
-	if ((num != (flen+1)) || (*(p++) != 01))
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_1,RSA_R_BLOCK_TYPE_IS_NOT_01);
-		return(-1);
-		}
+	p = from;
+	if (num != flen + 1 || *(p++) != 01) {
+		RSAerror(RSA_R_BLOCK_TYPE_IS_NOT_01);
+		return -1;
+	}
 
 	/* scan over padding data */
-	j=flen-1; /* one for type. */
-	for (i=0; i<j; i++)
-		{
-		if (*p != 0xff) /* should decrypt to 0xff */
-			{
-			if (*p == 0)
-				{ p++; break; }
-			else	{
-				RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_1,RSA_R_BAD_FIXED_HEADER_DECRYPT);
-				return(-1);
-				}
+	j = flen - 1; /* one for type. */
+	for (i = 0; i < j; i++) {
+		if (*p != 0xff) {
+			/* should decrypt to 0xff */
+			if (*p == 0) {
+				p++;
+				break;
+			} else {
+				RSAerror(RSA_R_BAD_FIXED_HEADER_DECRYPT);
+				return -1;
 			}
+		}
 		p++;
-		}
+	}
 
-	if (i == j)
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_1,RSA_R_NULL_BEFORE_BLOCK_MISSING);
-		return(-1);
-		}
+	if (i == j) {
+		RSAerror(RSA_R_NULL_BEFORE_BLOCK_MISSING);
+		return -1;
+	}
 
-	if (i < 8)
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_1,RSA_R_BAD_PAD_BYTE_COUNT);
-		return(-1);
-		}
+	if (i < 8) {
+		RSAerror(RSA_R_BAD_PAD_BYTE_COUNT);
+		return -1;
+	}
 	i++; /* Skip over the '\0' */
-	j-=i;
-	if (j > tlen)
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_1,RSA_R_DATA_TOO_LARGE);
-		return(-1);
-		}
-	memcpy(to,p,(unsigned int)j);
+	j -= i;
+	if (j > tlen) {
+		RSAerror(RSA_R_DATA_TOO_LARGE);
+		return -1;
+	}
+	memcpy(to, p, j);
 
-	return(j);
+	return j;
+}
+LCRYPTO_ALIAS(RSA_padding_check_PKCS1_type_1);
+
+int
+RSA_padding_add_PKCS1_type_2(unsigned char *to, int tlen,
+    const unsigned char *from, int flen)
+{
+	uint8_t padding[256];
+	uint8_t pad;
+	CBB cbb;
+	CBS cbs;
+	int i;
+	int ret = 0;
+
+	/*
+	 * Pad data block with PKCS1 type 2 padding - RFC 2313, section 8.1.
+	 */
+
+	memset(&cbb, 0, sizeof(cbb));
+	CBS_init(&cbs, NULL, 0);
+
+	if (flen < 0 || tlen < 0)
+		goto err;
+
+	if (flen > tlen - RSA_PKCS1_PADDING_SIZE) {
+		RSAerror(RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
+		goto err;
 	}
 
-int RSA_padding_add_PKCS1_type_2(unsigned char *to, int tlen,
-	     const unsigned char *from, int flen)
-	{
-	int i,j;
-	unsigned char *p;
-	
-	if (flen > (tlen-11))
-		{
-		RSAerr(RSA_F_RSA_PADDING_ADD_PKCS1_TYPE_2,RSA_R_DATA_TOO_LARGE_FOR_KEY_SIZE);
-		return(0);
-		}
-	
-	p=(unsigned char *)to;
+	if (!CBB_init_fixed(&cbb, to, tlen))
+		goto err;
 
-	*(p++)=0;
-	*(p++)=2; /* Public Key BT (Block Type) */
+	/*
+	 * Add leading NUL, block type (0x02), padding bytes (random non-zero
+	 * bytes) and trailing NUL.
+	 */
+	if (!CBB_add_u8(&cbb, 0))
+		goto err;
+	if (!CBB_add_u8(&cbb, 2))
+		goto err;
+	for (i = 0; i < tlen - 3 - flen; i++) {
+		do {
+			if (CBS_len(&cbs) == 0) {
+				arc4random_buf(padding, sizeof(padding));
+				CBS_init(&cbs, padding, sizeof(padding));
+			}
+			if (!CBS_get_u8(&cbs, &pad))
+				goto err;
+		} while (pad == 0);
 
-	/* pad out with non-zero random data */
-	j=tlen-3-flen;
-
-	if (RAND_bytes(p,j) <= 0)
-		return(0);
-	for (i=0; i<j; i++)
-		{
-		if (*p == '\0')
-			do	{
-				if (RAND_bytes(p,1) <= 0)
-					return(0);
-				} while (*p == '\0');
-		p++;
-		}
-
-	*(p++)='\0';
-
-	memcpy(p,from,(unsigned int)flen);
-	return(1);
+		if (!CBB_add_u8(&cbb, pad))
+			goto err;
 	}
+	if (!CBB_add_u8(&cbb, 0))
+		goto err;
 
-int RSA_padding_check_PKCS1_type_2(unsigned char *to, int tlen,
-	     const unsigned char *from, int flen, int num)
-	{
-	int i,j;
+	/* Now add the actual data. */
+	if (!CBB_add_bytes(&cbb, from, flen))
+		goto err;
+
+	if (!CBB_finish(&cbb, NULL, NULL))
+		goto err;
+
+	ret = 1;
+
+ err:
+	CBB_cleanup(&cbb);
+	explicit_bzero(padding, sizeof(padding));
+
+	return ret;
+}
+LCRYPTO_ALIAS(RSA_padding_add_PKCS1_type_2);
+
+int
+RSA_padding_check_PKCS1_type_2(unsigned char *to, int tlen,
+    const unsigned char *from, int flen, int num)
+{
+	int i, j;
 	const unsigned char *p;
 
-	p=from;
-	if ((num != (flen+1)) || (*(p++) != 02))
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_2,RSA_R_BLOCK_TYPE_IS_NOT_02);
-		return(-1);
-		}
-#ifdef PKCS1_CHECK
-	return(num-11);
-#endif
-
-	/* scan over padding data */
-	j=flen-1; /* one for type. */
-	for (i=0; i<j; i++)
-		if (*(p++) == 0) break;
-
-	if (i == j)
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_2,RSA_R_NULL_BEFORE_BLOCK_MISSING);
-		return(-1);
-		}
-
-	if (i < 8)
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_2,RSA_R_BAD_PAD_BYTE_COUNT);
-		return(-1);
-		}
-	i++; /* Skip over the '\0' */
-	j-=i;
-	if (j > tlen)
-		{
-		RSAerr(RSA_F_RSA_PADDING_CHECK_PKCS1_TYPE_2,RSA_R_DATA_TOO_LARGE);
-		return(-1);
-		}
-	memcpy(to,p,(unsigned int)j);
-
-	return(j);
+	p = from;
+	if (num != flen + 1 || *(p++) != 02) {
+		RSAerror(RSA_R_BLOCK_TYPE_IS_NOT_02);
+		return -1;
 	}
 
+	/* scan over padding data */
+	j = flen - 1; /* one for type. */
+	for (i = 0; i < j; i++)
+		if (*(p++) == 0)
+			break;
+
+	if (i == j) {
+		RSAerror(RSA_R_NULL_BEFORE_BLOCK_MISSING);
+		return -1;
+	}
+
+	if (i < 8) {
+		RSAerror(RSA_R_BAD_PAD_BYTE_COUNT);
+		return -1;
+	}
+	i++; /* Skip over the '\0' */
+	j -= i;
+	if (j > tlen) {
+		RSAerror(RSA_R_DATA_TOO_LARGE);
+		return -1;
+	}
+	memcpy(to, p, j);
+
+	return j;
+}
+LCRYPTO_ALIAS(RSA_padding_check_PKCS1_type_2);

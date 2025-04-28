@@ -1,4 +1,4 @@
-/* crypto/camellia/camellia.h -*- mode:C; c-file-style: "eay" -*- */
+/* $OpenBSD: camellia.h,v 1.5 2014/11/13 20:01:58 miod Exp $ */
 /* ====================================================================
  * Copyright (c) 2006 The OpenSSL Project.  All rights reserved.
  *
@@ -54,10 +54,6 @@
 
 #include <openssl/opensslconf.h>
 
-#ifdef OPENSSL_NO_CAMELLIA
-#error CAMELLIA is disabled.
-#endif
-
 #include <stddef.h>
 
 #define CAMELLIA_ENCRYPT	1
@@ -78,20 +74,15 @@ extern "C" {
 
 typedef unsigned int KEY_TABLE_TYPE[CAMELLIA_TABLE_WORD_LEN]; /* to match with WORD */
 
-struct camellia_key_st 
-	{
-	union	{
+struct camellia_key_st {
+	union {
 		double d;	/* ensures 64-bit align */
 		KEY_TABLE_TYPE rd_key;
-		} u;
+	} u;
 	int grand_rounds;
-	};
+};
 typedef struct camellia_key_st CAMELLIA_KEY;
 
-#ifdef OPENSSL_FIPS
-int private_Camellia_set_key(const unsigned char *userKey, const int bits,
-	CAMELLIA_KEY *key);
-#endif
 int Camellia_set_key(const unsigned char *userKey, const int bits,
 	CAMELLIA_KEY *key);
 

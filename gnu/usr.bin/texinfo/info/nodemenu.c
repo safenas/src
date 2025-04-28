@@ -1,5 +1,5 @@
 /* nodemenu.c -- produce a menu of all visited nodes.
-   $Id: nodemenu.c,v 1.1.1.4 2006/07/17 16:03:43 espie Exp $
+   $Id: nodemenu.c,v 1.4 2006/07/17 16:12:36 espie Exp $
 
    Copyright (C) 1993, 1997, 1998, 2002, 2003, 2004 Free Software
    Foundation, Inc.

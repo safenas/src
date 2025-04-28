@@ -14,7 +14,7 @@
 
 @SET_MAKE@
 
-# $Id: Makefile.in,v 1.1.1.5 2006/07/17 16:03:56 espie Exp $
+# $Id: Makefile.in,v 1.7 2006/07/17 16:12:36 espie Exp $
 # Makefile.am for texinfo/doc.
 # Run automake in .. to produce Makefile.in from this.
 #
@@ -654,11 +654,11 @@ info: info-am
 
 info-am: $(INFO_DEPS)
 
-install-data-am: install-data-local install-info-am install-man
+install-data-am: install-data-local install-info-am #install-man
 
 install-exec-am:
 
-install-info: install-info-am
+#install-info: install-info-am
 
 install-info-am: $(INFO_DEPS)
 	@$(NORMAL_INSTALL)

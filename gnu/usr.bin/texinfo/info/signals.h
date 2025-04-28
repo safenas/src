@@ -1,5 +1,5 @@
 /* signals.h -- header to include system dependent signal definitions.
-   $Id: signals.h,v 1.1.1.3 2006/07/17 16:03:44 espie Exp $
+   $Id: signals.h,v 1.3 2006/07/17 16:12:36 espie Exp $
 
    Copyright (C) 1993, 1994, 1995, 1997, 2002, 2004 Free Software Foundation, Inc.
 

@@ -1,0 +1,18 @@
+.\" $OpenBSD: allch.in,v 1.4 2017/07/04 14:53:26 schwarze Exp $
+.Dd $Mdocdate: January 25 2025 $
+.Dt RS-OUTSIDE 1
+.Os
+.Sh NAME
+.Nm Rs-outside
+.Nd reference macros outside reference blocks
+.Sh DESCRIPTION
+BEGINTEST
+.Pp
+Some percent-macros can be used outside reference blocks.
+For example, let's study
+.%B The Book of PF
+and relax reading
+.%T A Standard for the Transmission of IP Datagrams on Avian Carriers
+afterwards.
+.Pp
+ENDTEST

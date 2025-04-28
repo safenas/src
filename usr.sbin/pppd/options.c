@@ -1,26 +1,52 @@
+/*	$OpenBSD: options.c,v 1.32 2024/08/10 05:32:28 jsg Exp $	*/
+
 /*
  * options.c - handles option processing for PPP.
  *
- * Copyright (c) 1989 Carnegie Mellon University.
- * All rights reserved.
+ * Copyright (c) 1984-2000 Carnegie Mellon University. All rights reserved.
  *
- * Redistribution and use in source and binary forms are permitted
- * provided that the above copyright notice and this paragraph are
- * duplicated in all such forms and that any documentation,
- * advertising materials, and other materials related to such
- * distribution and use acknowledge that the software was developed
- * by Carnegie Mellon University.  The name of the
- * University may not be used to endorse or promote products derived
- * from this software without specific prior written permission.
- * THIS SOFTWARE IS PROVIDED ``AS IS'' AND WITHOUT ANY EXPRESS OR
- * IMPLIED WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED
- * WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *
+ * 3. The name "Carnegie Mellon University" must not be used to
+ *    endorse or promote products derived from this software without
+ *    prior written permission. For permission or any legal
+ *    details, please contact
+ *      Office of Technology Transfer
+ *      Carnegie Mellon University
+ *      5000 Forbes Avenue
+ *      Pittsburgh, PA  15213-3890
+ *      (412) 268-4387, fax: (412) 268-7395
+ *      tech-transfer@andrew.cmu.edu
+ *
+ * 4. Redistributions of any form whatsoever must retain the following
+ *    acknowledgment:
+ *    "This product includes software developed by Computing Services
+ *     at Carnegie Mellon University (http://www.cmu.edu/computing/)."
+ *
+ * CARNEGIE MELLON UNIVERSITY DISCLAIMS ALL WARRANTIES WITH REGARD TO
+ * THIS SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS, IN NO EVENT SHALL CARNEGIE MELLON UNIVERSITY BE LIABLE
+ * FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+ * AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
+ * OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef lint
-static char rcsid[] = "$Id: options.c,v 1.1.1.1 1995/10/18 08:47:59 deraadt Exp $";
-#endif
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 
+#include <ctype.h>
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
@@ -31,9 +57,12 @@ static char rcsid[] = "$Id: options.c,v 1.1.1.1 1995/10/18 08:47:59 deraadt Exp 
 #include <string.h>
 #include <netdb.h>
 #include <pwd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#ifdef PPP_FILTER
+#include <pcap.h>
+#include <pcap-int.h>	/* XXX: To get struct pcap */
+#endif
 
 #include "pppd.h"
 #include "pathnames.h"
@@ -44,6 +73,9 @@ static char rcsid[] = "$Id: options.c,v 1.1.1.1 1995/10/18 08:47:59 deraadt Exp 
 #include "upap.h"
 #include "chap.h"
 #include "ccp.h"
+#ifdef CBCP_SUPPORT
+#include "cbcp.h"
+#endif
 
 #include <net/ppp-comp.h>
 
@@ -51,7 +83,7 @@ static char rcsid[] = "$Id: options.c,v 1.1.1.1 1995/10/18 08:47:59 deraadt Exp 
 #define TRUE	1
 
 #if defined(ultrix) || defined(NeXT)
-char *strdup __P((char *));
+char *strdup(char *);
 #endif
 
 #ifndef GIDSET_TYPE
@@ -61,117 +93,171 @@ char *strdup __P((char *));
 /*
  * Option variables and default values.
  */
+#ifdef PPP_FILTER
+int	dflag = 0;		/* Tell libpcap we want debugging */
+#endif
 int	debug = 0;		/* Debug flag */
 int	kdebugflag = 0;		/* Tell kernel to print debug messages */
 int	default_device = 1;	/* Using /dev/tty or equivalent */
-char	devnam[MAXPATHLEN] = "/dev/tty";	/* Device name */
+char	devnam[PATH_MAX] = "/dev/tty";	/* Device name */
 int	crtscts = 0;		/* Use hardware flow control */
 int	modem = 1;		/* Use modem control lines */
+int	modem_chat = 0;		/* Use modem control lines during chat */
 int	inspeed = 0;		/* Input/Output speed requested */
 u_int32_t netmask = 0;		/* IP netmask to set on interface */
 int	lockflag = 0;		/* Create lock file to lock the serial dev */
 int	nodetach = 0;		/* Don't detach from controlling tty */
 char	*connector = NULL;	/* Script to establish physical link */
 char	*disconnector = NULL;	/* Script to disestablish physical link */
+char	*welcomer = NULL;	/* Script to run after phys link estab. */
+int	maxconnect = 0;		/* Maximum connect time */
 char	user[MAXNAMELEN];	/* Username for PAP */
 char	passwd[MAXSECRETLEN];	/* Password for PAP */
 int	auth_required = 0;	/* Peer is required to authenticate */
-int	defaultroute = 0;	/* assign default route through interface */
-int	proxyarp = 0;		/* Set up proxy ARP entry for peer */
-int	persist = 0;		/* Reopen link after it goes down */
+volatile sig_atomic_t persist = 0; /* Reopen link after it goes down */
 int	uselogin = 0;		/* Use /etc/passwd for checking PAP */
 int	lcp_echo_interval = 0; 	/* Interval between LCP echo-requests */
 int	lcp_echo_fails = 0;	/* Tolerance to unanswered echo-requests */
 char	our_name[MAXNAMELEN];	/* Our name for authentication purposes */
 char	remote_name[MAXNAMELEN]; /* Peer's name for authentication */
+int	explicit_remote = 0;	/* User specified explicit remote name */
 int	usehostname = 0;	/* Use hostname for our_name */
 int	disable_defaultip = 0;	/* Don't use hostname for default IP adrs */
+int	demand = 0;		/* do dial-on-demand */
 char	*ipparam = NULL;	/* Extra parameter for ip up/down scripts */
 int	cryptpap;		/* Passwords in pap-secrets are encrypted */
+int	idle_time_limit = 0;	/* Disconnect if idle for this many seconds */
+int	holdoff = 30;		/* # seconds to pause before reconnecting */
+int	refuse_pap = 0;		/* Set to say we won't do PAP */
+int	refuse_chap = 0;	/* Set to say we won't do CHAP */
 
-#ifdef _linux_
-int idle_time_limit = 0;
-static int setidle __P((char **));
+#ifdef MSLANMAN
+int	ms_lanman = 0;    	/* Nonzero if use LanMan password instead of NT */
+			  	/* Has meaning only with MS-CHAP challenges */
+#endif
+
+struct option_info auth_req_info;
+struct option_info connector_info;
+struct option_info disconnector_info;
+struct option_info welcomer_info;
+struct option_info devnam_info;
+#ifdef PPP_FILTER
+struct	bpf_program pass_filter;/* Filter program for packets to pass */
+struct	bpf_program active_filter; /* Filter program for link-active pkts */
+pcap_t  pc;			/* Fake struct pcap so we can compile expr */
 #endif
 
 /*
  * Prototypes
  */
-static int setdebug __P((void));
-static int setkdebug __P((char **));
-static int setpassive __P((void));
-static int setsilent __P((void));
-static int noopt __P((void));
-static int setnovj __P((void));
-static int setnovjccomp __P((void));
-static int setvjslots __P((char **));
-static int reqpap __P((void));
-static int nopap __P((void));
-static int setupapfile __P((char **));
-static int nochap __P((void));
-static int reqchap __P((void));
-static int setspeed __P((char *));
-static int noaccomp __P((void));
-static int noasyncmap __P((void));
-static int noipaddr __P((void));
-static int nomagicnumber __P((void));
-static int setasyncmap __P((char **));
-static int setescape __P((char **));
-static int setmru __P((char **));
-static int setmtu __P((char **));
-static int nomru __P((void));
-static int nopcomp __P((void));
-static int setconnector __P((char **));
-static int setdisconnector __P((char **));
-static int setdomain __P((char **));
-static int setnetmask __P((char **));
-static int setcrtscts __P((void));
-static int setnocrtscts __P((void));
-static int setxonxoff __P((void));
-static int setnodetach __P((void));
-static int setmodem __P((void));
-static int setlocal __P((void));
-static int setlock __P((void));
-static int setname __P((char **));
-static int setuser __P((char **));
-static int setremote __P((char **));
-static int setauth __P((void));
-static int readfile __P((char **));
-static int setdefaultroute __P((void));
-static int setnodefaultroute __P((void));
-static int setproxyarp __P((void));
-static int setnoproxyarp __P((void));
-static int setpersist __P((void));
-static int setdologin __P((void));
-static int setusehostname __P((void));
-static int setnoipdflt __P((void));
-static int setlcptimeout __P((char **));
-static int setlcpterm __P((char **));
-static int setlcpconf __P((char **));
-static int setlcpfails __P((char **));
-static int setipcptimeout __P((char **));
-static int setipcpterm __P((char **));
-static int setipcpconf __P((char **));
-static int setipcpfails __P((char **));
-static int setpaptimeout __P((char **));
-static int setpapreqs __P((char **));
-static int setpapreqtime __P((char **));
-static int setchaptimeout __P((char **));
-static int setchapchal __P((char **));
-static int setchapintv __P((char **));
-static int setipcpaccl __P((void));
-static int setipcpaccr __P((void));
-static int setlcpechointv __P((char **));
-static int setlcpechofails __P((char **));
-static int setbsdcomp __P((char **));
-static int setnobsdcomp __P((void));
-static int setipparam __P((char **));
-static int setpapcrypt __P((void));
+static int setdevname(char *, int);
+static int setipaddr(char *);
+static int setspeed(char *);
+static int setdebug(char **);
+static int setkdebug(char **);
+static int setpassive(char **);
+static int setsilent(char **);
+static int noopt(char **);
+static int setnovj(char **);
+static int setnovjccomp(char **);
+static int setvjslots(char **);
+static int reqpap(char **);
+static int nopap(char **);
+static int nochap(char **);
+static int reqchap(char **);
+static int noaccomp(char **);
+static int noasyncmap(char **);
+static int noip(char **);
+static int nomagicnumber(char **);
+static int setasyncmap(char **);
+static int setescape(char **);
+static int setmru(char **);
+static int setmtu(char **);
+#ifdef CBCP_SUPPORT
+static int setcbcp(char **);
+#endif
+static int nomru(char **);
+static int nopcomp(char **);
+static int setconnector(char **);
+static int setdisconnector(char **);
+static int setwelcomer(char **);
+static int setmaxconnect(char **);
+static int setdomain(char **);
+static int setnetmask(char **);
+static int setcrtscts(char **);
+static int setnocrtscts(char **);
+static int setxonxoff(char **);
+static int setnodetach(char **);
+static int setupdetach(char **);
+static int setmodem(char **);
+static int setmodem_chat(char **);
+static int setlocal(char **);
+static int setlock(char **);
+static int setname(char **);
+static int setuser(char **);
+static int setremote(char **);
+static int setauth(char **);
+static int setnoauth(char **);
+static int readfile(char **);
+static int callfile(char **);
+static int setdefaultroute(char **);
+static int setnodefaultroute(char **);
+static int setproxyarp(char **);
+static int setnoproxyarp(char **);
+static int setpersist(char **);
+static int setnopersist(char **);
+static int setdologin(char **);
+static int setusehostname(char **);
+static int setnoipdflt(char **);
+static int setlcptimeout(char **);
+static int setlcpterm(char **);
+static int setlcpconf(char **);
+static int setlcpfails(char **);
+static int setipcptimeout(char **);
+static int setipcpterm(char **);
+static int setipcpconf(char **);
+static int setipcpfails(char **);
+static int setpaptimeout(char **);
+static int setpapreqs(char **);
+static int setpapreqtime(char **);
+static int setchaptimeout(char **);
+static int setchapchal(char **);
+static int setchapintv(char **);
+static int setipcpaccl(char **);
+static int setipcpaccr(char **);
+static int setlcpechointv(char **);
+static int setlcpechofails(char **);
+static int noccp(char **);
+static int setbsdcomp(char **);
+static int setnobsdcomp(char **);
+static int setdeflate(char **);
+static int setnodeflate(char **);
+static int setnodeflatedraft(char **);
+static int setdemand(char **);
+static int setpred1comp(char **);
+static int setnopred1comp(char **);
+static int setipparam(char **);
+static int setpapcrypt(char **);
+static int setidle(char **);
+static int setholdoff(char **);
+static int setdnsaddr(char **);
+static int setwinsaddr(char **);
+static int showversion(char **);
+static int showhelp(char **);
 
-static int number_option __P((char *, u_int32_t *, int));
-static int readable __P((int fd));
+#ifdef PPP_FILTER
+static int setpdebug(char **);
+static int setpassfilter(char **);
+static int setactivefilter(char **);
+#endif
 
-void usage();
+#ifdef MSLANMAN
+static int setmslanman(char **);
+#endif
+
+static int number_option(char *, u_int32_t *, int);
+static int int_option(char *, int *);
+static int readable(int fd);
 
 /*
  * Valid arguments.
@@ -179,32 +265,48 @@ void usage();
 static struct cmd {
     char *cmd_name;
     int num_args;
-    int (*cmd_func)();
+    int (*cmd_func)(char **);
 } cmds[] = {
-    {"-all", 0, noopt},		/* Don't request/allow any options */
+    {"-all", 0, noopt},		/* Don't request/allow any options (useless) */
+    {"noaccomp", 0, noaccomp},	/* Disable Address/Control compression */
     {"-ac", 0, noaccomp},	/* Disable Address/Control compress */
+    {"default-asyncmap", 0, noasyncmap}, /* Disable asyncmap negotiation */
     {"-am", 0, noasyncmap},	/* Disable asyncmap negotiation */
     {"-as", 1, setasyncmap},	/* set the desired async map */
     {"-d", 0, setdebug},	/* Increase debugging level */
+    {"nodetach", 0, setnodetach}, /* Don't detach from controlling tty */
     {"-detach", 0, setnodetach}, /* don't fork */
-    {"-ip", 0, noipaddr},	/* Disable IP address negotiation */
+    {"updetach", 0, setupdetach}, /* Detach once an NP has come up */
+    {"noip", 0, noip},		/* Disable IP and IPCP */
+    {"-ip", 0, noip},		/* Disable IP and IPCP */
+    {"nomagic", 0, nomagicnumber}, /* Disable magic number negotiation */
     {"-mn", 0, nomagicnumber},	/* Disable magic number negotiation */
+    {"default-mru", 0, nomru},	/* Disable MRU negotiation */
     {"-mru", 0, nomru},		/* Disable mru negotiation */
     {"-p", 0, setpassive},	/* Set passive mode */
+    {"nopcomp", 0, nopcomp},	/* Disable protocol field compression */
     {"-pc", 0, nopcomp},	/* Disable protocol field compress */
-    {"+ua", 1, setupapfile},	/* Get PAP user and password from file */
+    {"require-pap", 0, reqpap},	/* Require PAP authentication from peer */
     {"+pap", 0, reqpap},	/* Require PAP auth from peer */
+    {"refuse-pap", 0, nopap},	/* Don't agree to auth to peer with PAP */
     {"-pap", 0, nopap},		/* Don't allow UPAP authentication with peer */
+    {"require-chap", 0, reqchap}, /* Require CHAP authentication from peer */
     {"+chap", 0, reqchap},	/* Require CHAP authentication from peer */
+    {"refuse-chap", 0, nochap},	/* Don't agree to auth to peer with CHAP */
     {"-chap", 0, nochap},	/* Don't allow CHAP authentication with peer */
+    {"novj", 0, setnovj},	/* Disable VJ compression */
     {"-vj", 0, setnovj},	/* disable VJ compression */
+    {"novjccomp", 0, setnovjccomp}, /* disable VJ connection-ID compression */
     {"-vjccomp", 0, setnovjccomp}, /* disable VJ connection-ID compression */
     {"vj-max-slots", 1, setvjslots}, /* Set maximum VJ header slots */
     {"asyncmap", 1, setasyncmap}, /* set the desired async map */
     {"escape", 1, setescape},	/* set chars to escape on transmission */
     {"connect", 1, setconnector}, /* A program to set up a connection */
     {"disconnect", 1, setdisconnector},	/* program to disconnect serial dev. */
+    {"welcome", 1, setwelcomer},/* Script to welcome client */
+    {"maxconnect", 1, setmaxconnect},  /* specify a maximum connect time */
     {"crtscts", 0, setcrtscts},	/* set h/w flow control */
+    {"nocrtscts", 0, setnocrtscts}, /* clear h/w flow control */
     {"-crtscts", 0, setnocrtscts}, /* clear h/w flow control */
     {"xonxoff", 0, setxonxoff},	/* set s/w flow control */
     {"debug", 0, setdebug},	/* Increase debugging level */
@@ -212,23 +314,33 @@ static struct cmd {
     {"domain", 1, setdomain},	/* Add given domain name to hostname*/
     {"mru", 1, setmru},		/* Set MRU value for negotiation */
     {"mtu", 1, setmtu},		/* Set our MTU */
+#ifdef CBCP_SUPPORT
+    {"callback", 1, setcbcp},	/* Ask for callback */
+#endif
     {"netmask", 1, setnetmask},	/* set netmask */
     {"passive", 0, setpassive},	/* Set passive mode */
     {"silent", 0, setsilent},	/* Set silent mode */
     {"modem", 0, setmodem},	/* Use modem control lines */
+    {"modem_chat", 0, setmodem_chat}, /* Use modem control lines during chat */
     {"local", 0, setlocal},	/* Don't use modem control lines */
     {"lock", 0, setlock},	/* Lock serial device (with lock file) */
     {"name", 1, setname},	/* Set local name for authentication */
-    {"user", 1, setuser},	/* Set username for PAP auth with peer */
+    {"user", 1, setuser},	/* Set name for auth with peer */
     {"usehostname", 0, setusehostname},	/* Must use hostname for auth. */
     {"remotename", 1, setremote}, /* Set remote name for authentication */
     {"auth", 0, setauth},	/* Require authentication from peer */
+    {"noauth", 0, setnoauth},	/* Don't require peer to authenticate */
     {"file", 1, readfile},	/* Take options from a file */
+    {"call", 1, callfile},	/* Take options from a privileged file */
     {"defaultroute", 0, setdefaultroute}, /* Add default route */
+    {"nodefaultroute", 0, setnodefaultroute}, /* disable defaultroute option */
     {"-defaultroute", 0, setnodefaultroute}, /* disable defaultroute option */
     {"proxyarp", 0, setproxyarp}, /* Add proxy ARP entry */
+    {"noproxyarp", 0, setnoproxyarp}, /* disable proxyarp option */
     {"-proxyarp", 0, setnoproxyarp}, /* disable proxyarp option */
     {"persist", 0, setpersist},	/* Keep on reopening connection after close */
+    {"nopersist", 0, setnopersist},  /* Turn off persist option */
+    {"demand", 0, setdemand},	/* Dial on demand */
     {"login", 0, setdologin},	/* Use system password database for UPAP */
     {"noipdefault", 0, setnoipdflt}, /* Don't use name for default IP adrs */
     {"lcp-echo-failure", 1, setlcpechofails}, /* consecutive echo failures */
@@ -249,13 +361,38 @@ static struct cmd {
     {"chap-interval", 1, setchapintv}, /* Set interval for rechallenge */
     {"ipcp-accept-local", 0, setipcpaccl}, /* Accept peer's address for us */
     {"ipcp-accept-remote", 0, setipcpaccr}, /* Accept peer's address for it */
+    {"noccp", 0, noccp},		/* Disable CCP negotiation */
+    {"-ccp", 0, noccp},			/* Disable CCP negotiation */
     {"bsdcomp", 1, setbsdcomp},		/* request BSD-Compress */
+    {"nobsdcomp", 0, setnobsdcomp},	/* don't allow BSD-Compress */
     {"-bsdcomp", 0, setnobsdcomp},	/* don't allow BSD-Compress */
+    {"deflate", 1, setdeflate},		/* request Deflate compression */
+    {"nodeflate", 0, setnodeflate},	/* don't allow Deflate compression */
+    {"-deflate", 0, setnodeflate},	/* don't allow Deflate compression */
+    {"nodeflatedraft", 0, setnodeflatedraft}, /* don't use draft deflate # */
+    {"predictor1", 0, setpred1comp},	/* request Predictor-1 */
+    {"nopredictor1", 0, setnopred1comp},/* don't allow Predictor-1 */
+    {"-predictor1", 0, setnopred1comp},	/* don't allow Predictor-1 */
     {"ipparam", 1, setipparam},		/* set ip script parameter */
     {"papcrypt", 0, setpapcrypt},	/* PAP passwords encrypted */
-#ifdef _linux_
-    {"idle-disconnect", 1, setidle}, /* seconds for disconnect of idle IP */
+    {"idle", 1, setidle},		/* idle time limit (seconds) */
+    {"holdoff", 1, setholdoff},		/* set holdoff time (seconds) */
+    {"ms-dns", 1, setdnsaddr},		/* DNS address for the peer's use */
+    {"ms-wins", 1, setwinsaddr},	/* Nameserver for SMB over TCP/IP for peer */
+    {"--version", 0, showversion},	/* Show version number */
+    {"--help", 0, showhelp},		/* Show brief listing of options */
+    {"-h", 0, showhelp},		/* ditto */
+
+#ifdef PPP_FILTER
+    {"pdebug", 1, setpdebug},		/* libpcap debugging */
+    {"pass-filter", 1, setpassfilter},	/* set filter for packets to pass */
+    {"active-filter", 1, setactivefilter}, /* set filter for active pkts */
 #endif
+
+#ifdef MSLANMAN
+    {"ms-lanman", 0, setmslanman},	/* Use LanMan psswd when using MS-CHAP */
+#endif
+
     {NULL, 0, NULL}
 };
 
@@ -264,9 +401,9 @@ static struct cmd {
 #define IMPLEMENTATION ""
 #endif
 
-static char *usage_string = "\
+static const char usage_string[] = "\
 pppd version %s patch level %d%s\n\
-Usage: %s [ arguments ], where arguments are:\n\
+Usage: %s [ options ], where options are:\n\
 	<device>	Communicate over the named device\n\
 	<speed>		Set the baud rate to <speed>\n\
 	<loc>:<rem>	Set the local and/or remote interface IP\n\
@@ -278,25 +415,28 @@ Usage: %s [ arguments ], where arguments are:\n\
 	defaultroute	Add default route through interface\n\
 	file <f>	Take options from file <f>\n\
 	modem		Use modem control lines\n\
+	modem_chat	Use modem control lines during chat\n\
 	mru <n>		Set MRU value to <n> for negotiation\n\
 	netmask <n>	Set interface netmask to <n>\n\
 See pppd(8) for more options.\n\
 ";
 
+static char *current_option;	/* the name of the option being parsed */
+static int privileged_option;	/* set iff the current option came from root */
+static char *option_source;	/* string saying where the option came from */
 
 /*
- * parse_args - parse a string of arguments, from the command
- * line or from a file.
+ * parse_args - parse a string of arguments from the command line.
  */
 int
-parse_args(argc, argv)
-    int argc;
-    char **argv;
+parse_args(int argc, char **argv)
 {
-    char *arg, *val;
+    char *arg;
     struct cmd *cmdp;
     int ret;
 
+    privileged_option = privileged;
+    option_source = "command line";
     while (argc > 0) {
 	arg = *argv++;
 	--argc;
@@ -310,9 +450,10 @@ parse_args(argc, argv)
 
 	if (cmdp->cmd_name != NULL) {
 	    if (argc < cmdp->num_args) {
-		fprintf(stderr, "Too few parameters for command %s\n", arg);
+		option_error("too few parameters for option %s", arg);
 		return 0;
 	    }
+	    current_option = arg;
 	    if (!(*cmdp->cmd_func)(argv))
 		return 0;
 	    argc -= cmdp->num_args;
@@ -322,10 +463,10 @@ parse_args(argc, argv)
 	    /*
 	     * Maybe a tty name, speed or IP address?
 	     */
-	    if ((ret = setdevname(arg)) == 0
+	    if ((ret = setdevname(arg, 0)) == 0
 		&& (ret = setspeed(arg)) == 0
 		&& (ret = setipaddr(arg)) == 0) {
-		fprintf(stderr, "%s: unrecognized command\n", arg);
+		option_error("unrecognized option '%s'", arg);
 		usage();
 		return 0;
 	    }
@@ -337,13 +478,71 @@ parse_args(argc, argv)
 }
 
 /*
+ * scan_args - scan the command line arguments to get the tty name,
+ * if specified.
+ */
+void
+scan_args(int argc, char **argv)
+{
+    char *arg;
+    struct cmd *cmdp;
+
+    while (argc > 0) {
+	arg = *argv++;
+	--argc;
+
+	/* Skip options and their arguments */
+	for (cmdp = cmds; cmdp->cmd_name; cmdp++)
+	    if (!strcmp(arg, cmdp->cmd_name))
+		break;
+
+	if (cmdp->cmd_name != NULL) {
+	    argc -= cmdp->num_args;
+	    argv += cmdp->num_args;
+	    continue;
+	}
+
+	/* Check if it's a tty name and copy it if so */
+	(void) setdevname(arg, 1);
+    }
+}
+
+/*
  * usage - print out a message telling how to use the program.
  */
 void
-usage()
+usage(void)
 {
-    fprintf(stderr, usage_string, VERSION, PATCHLEVEL, IMPLEMENTATION,
-	    progname);
+    if (phase == PHASE_INITIALIZE)
+	fprintf(stderr, usage_string, VERSION, PATCHLEVEL, IMPLEMENTATION,
+		__progname);
+}
+
+/*
+ * showhelp - print out usage message and exit.
+ */
+static int
+showhelp(char **argv)
+{
+    if (phase == PHASE_INITIALIZE) {
+	usage();
+	exit(0);
+    }
+    return 0;
+}
+
+/*
+ * showversion - print out the version number and exit.
+ */
+static int
+showversion(char **argv)
+{
+    if (phase == PHASE_INITIALIZE) {
+	fprintf(stderr, "pppd version %s patch level %d%s\n",
+		VERSION, PATCHLEVEL, IMPLEMENTATION);
+	exit(0);
+    }
+    return 0;
 }
 
 /*
@@ -351,14 +550,12 @@ usage()
  * and interpret them.
  */
 int
-options_from_file(filename, must_exist, check_prot)
-    char *filename;
-    int must_exist;
-    int check_prot;
+options_from_file(char *filename, int must_exist, int check_prot, int priv)
 {
     FILE *f;
     int i, newline, ret;
     struct cmd *cmdp;
+    int oldpriv;
     char *argv[MAXARGS];
     char args[MAXARGS][MAXWORDLEN];
     char cmd[MAXWORDLEN];
@@ -366,15 +563,18 @@ options_from_file(filename, must_exist, check_prot)
     if ((f = fopen(filename, "r")) == NULL) {
 	if (!must_exist && errno == ENOENT)
 	    return 1;
-	perror(filename);
+	option_error("Can't open options file %s: %m", filename);
 	return 0;
     }
     if (check_prot && !readable(fileno(f))) {
-	fprintf(stderr, "%s: access denied\n", filename);
+	option_error("Can't open options file %s: access denied", filename);
 	fclose(f);
 	return 0;
     }
 
+    oldpriv = privileged_option;
+    privileged_option = priv;
+    ret = 0;
     while (getword(f, cmd, &newline, filename)) {
 	/*
 	 * First see if it's a command.
@@ -386,36 +586,38 @@ options_from_file(filename, must_exist, check_prot)
 	if (cmdp->cmd_name != NULL) {
 	    for (i = 0; i < cmdp->num_args; ++i) {
 		if (!getword(f, args[i], &newline, filename)) {
-		    fprintf(stderr,
-			    "In file %s: too few parameters for command %s\n",
-			    filename, cmd);
-		    fclose(f);
-		    return 0;
+		    option_error(
+			"In file %s: too few parameters for option '%s'",
+			filename, cmd);
+		    goto err;
 		}
 		argv[i] = args[i];
 	    }
-	    if (!(*cmdp->cmd_func)(argv)) {
-		fclose(f);
-		return 0;
-	    }
+	    current_option = cmd;
+	    if (!(*cmdp->cmd_func)(argv))
+		goto err;
 
 	} else {
 	    /*
 	     * Maybe a tty name, speed or IP address?
 	     */
-	    if ((ret = setdevname(cmd)) == 0
-		&& (ret = setspeed(cmd)) == 0
-		&& (ret = setipaddr(cmd)) == 0) {
-		fprintf(stderr, "In file %s: unrecognized command %s\n",
-			filename, cmd);
-		fclose(f);
-		return 0;
+	    if ((i = setdevname(cmd, 0)) == 0
+		&& (i = setspeed(cmd)) == 0
+		&& (i = setipaddr(cmd)) == 0) {
+		option_error("In file %s: unrecognized option '%s'",
+			     filename, cmd);
+		goto err;
 	    }
-	    if (ret < 0)	/* error */
-		return 0;
+	    if (i < 0)		/* error */
+		goto err;
 	}
     }
-    return 1;
+    ret = 1;
+
+err:
+    fclose(f);
+    privileged_option = oldpriv;
+    return ret;
 }
 
 /*
@@ -423,7 +625,7 @@ options_from_file(filename, must_exist, check_prot)
  * and if so, interpret options from it.
  */
 int
-options_from_user()
+options_from_user(void)
 {
     char *user, *path, *file;
     int ret;
@@ -433,13 +635,9 @@ options_from_user()
     if (pw == NULL || (user = pw->pw_dir) == NULL || user[0] == 0)
 	return 1;
     file = _PATH_USEROPT;
-    path = malloc(strlen(user) + strlen(file) + 2);
-    if (path == NULL)
+    if (asprintf(&path, "%s/%s", user, file) == -1)
 	novm("init file name");
-    strcpy(path, user);
-    strcat(path, "/");
-    strcat(path, file);
-    ret = options_from_file(path, 0, 1);
+    ret = options_from_file(path, 0, 1, privileged);
     free(path);
     return ret;
 }
@@ -449,34 +647,47 @@ options_from_user()
  * device, and if so, interpret options from it.
  */
 int
-options_for_tty()
+options_for_tty(void)
 {
     char *dev, *path;
     int ret;
 
-    dev = strrchr(devnam, '/');
-    if (dev == NULL)
-	dev = devnam;
-    else
-	++dev;
+    dev = devnam;
+    if (strncmp(dev, "/dev/", 5) == 0)
+	dev += 5;
     if (strcmp(dev, "tty") == 0)
 	return 1;		/* don't look for /etc/ppp/options.tty */
-    path = malloc(strlen(_PATH_TTYOPT) + strlen(dev) + 1);
-    if (path == NULL)
+    if (asprintf(&path, "%s%s", _PATH_TTYOPT, dev) == -1)
 	novm("tty init file name");
-    strcpy(path, _PATH_TTYOPT);
-    strcat(path, dev);
-    ret = options_from_file(path, 0, 0);
+    ret = options_from_file(path, 0, 0, 1);
     free(path);
     return ret;
+}
+
+/*
+ * option_error - print a message about an error in an option.
+ * The message is logged, and also sent to
+ * stderr if phase == PHASE_INITIALIZE.
+ */
+void
+option_error(char *fmt, ...)
+{
+    va_list args;
+    char buf[256];
+
+    va_start(args, fmt);
+    vfmtmsg(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    if (phase == PHASE_INITIALIZE)
+	fprintf(stderr, "%s: %s\n", __progname, buf);
+    syslog(LOG_ERR, "%s", buf);
 }
 
 /*
  * readable - check if a file is readable by the real user.
  */
 static int
-readable(fd)
-    int fd;
+readable(int fd)
 {
     uid_t uid;
     int ngroups, i;
@@ -505,13 +716,8 @@ readable(fd)
  * Quotes, white-space and \ may be escaped with \.
  * \<newline> is ignored.
  */
-
 int
-getword(f, word, newlinep, filename)
-    FILE *f;
-    char *word;
-    int *newlinep;
-    char *filename;
+getword(FILE *f, char *word, int *newlinep, char *filename)
 {
     int c, len, escape;
     int quoted, comment;
@@ -670,9 +876,10 @@ getword(f, word, newlinep, filename)
 	    /*
 	     * Store the resulting character for the escape sequence.
 	     */
-	    if (len < MAXWORDLEN-1)
+	    if (len < MAXWORDLEN) {
 		word[len] = value;
-	    ++len;
+		++len;
+	    }
 
 	    if (!got)
 		c = getc(f);
@@ -705,9 +912,10 @@ getword(f, word, newlinep, filename)
 	/*
 	 * An ordinary character: store it in the word and get another.
 	 */
-	if (len < MAXWORDLEN-1)
+	if (len < MAXWORDLEN) {
 	    word[len] = c;
-	++len;
+	    ++len;
+	}
 
 	c = getc(f);
     }
@@ -719,7 +927,7 @@ getword(f, word, newlinep, filename)
 	if (ferror(f)) {
 	    if (errno == 0)
 		errno = EIO;
-	    perror(filename);
+	    option_error("Error reading %s: %m", filename);
 	    die(1);
 	}
 	/*
@@ -734,8 +942,8 @@ getword(f, word, newlinep, filename)
      * Warn if the word was too long, and append a terminating null.
      */
     if (len >= MAXWORDLEN) {
-	fprintf(stderr, "%s: warning: word in file %s too long (%.20s...)\n",
-		progname, filename, word);
+	option_error("warning: word in file %s too long (%.20s...)",
+		     filename, word);
 	len = MAXWORDLEN - 1;
     }
     word[len] = 0;
@@ -750,16 +958,14 @@ getword(f, word, newlinep, filename)
  * number_option - parse an unsigned numeric parameter for an option.
  */
 static int
-number_option(str, valp, base)
-    char *str;
-    u_int32_t *valp;
-    int base;
+number_option(char *str, u_int32_t *valp, int base)
 {
     char *ptr;
 
     *valp = strtoul(str, &ptr, base);
     if (ptr == str) {
-	fprintf(stderr, "%s: invalid number: %s\n", progname, str);
+	option_error("invalid numeric parameter '%s' for %s option",
+		     str, current_option);
 	return 0;
     }
     return 1;
@@ -772,9 +978,7 @@ number_option(str, valp, base)
  * if there is an error.
  */
 static int
-int_option(str, valp)
-    char *str;
-    int *valp;
+int_option(char *str, int *valp)
 {
     u_int32_t v;
 
@@ -786,24 +990,67 @@ int_option(str, valp)
 
 
 /*
- * The following procedures execute commands.
+ * The following procedures parse options.
  */
 
 /*
  * readfile - take commands from a file.
  */
 static int
-readfile(argv)
-    char **argv;
+readfile(char **argv)
 {
-    return options_from_file(*argv, 1, 1);
+    return options_from_file(*argv, 1, 1, privileged_option);
 }
+
+/*
+ * callfile - take commands from /etc/ppp/peers/<name>.
+ * Name may not contain /../, start with / or ../, or end in /..
+ */
+static int
+callfile(char **argv)
+{
+    char *fname, *arg, *p;
+    int l, ok;
+
+    arg = *argv;
+    ok = 1;
+    if (arg[0] == '/' || arg[0] == 0)
+	ok = 0;
+    else {
+	for (p = arg; *p != 0; ) {
+	    if (p[0] == '.' && p[1] == '.' && (p[2] == '/' || p[2] == 0)) {
+		ok = 0;
+		break;
+	    }
+	    while (*p != '/' && *p != 0)
+		++p;
+	    if (*p == '/')
+		++p;
+	}
+    }
+    if (!ok) {
+	option_error("call option value may not contain .. or start with /");
+	return 0;
+    }
+
+    l = strlen(arg) + strlen(_PATH_PEERFILES) + 1;
+    if ((fname = (char *) malloc(l)) == NULL)
+	novm("call file name");
+    strlcpy(fname, _PATH_PEERFILES, l);
+    strlcat(fname, arg, l);
+
+    ok = options_from_file(fname, 1, 1, 1);
+
+    free(fname);
+    return ok;
+}
+
 
 /*
  * setdebug - Set debug (command line argument).
  */
 static int
-setdebug()
+setdebug(char **argv)
 {
     debug++;
     return (1);
@@ -813,22 +1060,63 @@ setdebug()
  * setkdebug - Set kernel debugging level.
  */
 static int
-setkdebug(argv)
-    char **argv;
+setkdebug(char **argv)
 {
     return int_option(*argv, &kdebugflag);
 }
+
+#ifdef PPP_FILTER
+/*
+ * setpdebug - Set libpcap debugging level.
+ */
+static int
+setpdebug(char **argv)
+{
+    return int_option(*argv, &dflag);
+}
+
+/*
+ * setpassfilter - Set the pass filter for packets
+ */
+static int
+setpassfilter(char **argv)
+{
+    pc.linktype = DLT_PPP;
+    pc.snapshot = PPP_HDRLEN;
+ 
+    if (pcap_compile(&pc, &pass_filter, *argv, 1, netmask) == 0)
+	return 1;
+    option_error("error in pass-filter expression: %s\n", pcap_geterr(&pc));
+    return 0;
+}
+
+/*
+ * setactivefilter - Set the active filter for packets
+ */
+static int
+setactivefilter(char **argv)
+{
+    pc.linktype = DLT_PPP;
+    pc.snapshot = PPP_HDRLEN;
+ 
+    if (pcap_compile(&pc, &active_filter, *argv, 1, netmask) == 0)
+	return 1;
+    option_error("error in active-filter expression: %s\n", pcap_geterr(&pc));
+    return 0;
+}
+#endif
 
 /*
  * noopt - Disable all options.
  */
 static int
-noopt()
+noopt(char **argv)
 {
     BZERO((char *) &lcp_wantoptions[0], sizeof (struct lcp_options));
     BZERO((char *) &lcp_allowoptions[0], sizeof (struct lcp_options));
     BZERO((char *) &ipcp_wantoptions[0], sizeof (struct ipcp_options));
     BZERO((char *) &ipcp_allowoptions[0], sizeof (struct ipcp_options));
+
     return (1);
 }
 
@@ -836,7 +1124,7 @@ noopt()
  * noaccomp - Disable Address/Control field compression negotiation.
  */
 static int
-noaccomp()
+noaccomp(char **argv)
 {
     lcp_wantoptions[0].neg_accompression = 0;
     lcp_allowoptions[0].neg_accompression = 0;
@@ -848,7 +1136,7 @@ noaccomp()
  * noasyncmap - Disable async map negotiation.
  */
 static int
-noasyncmap()
+noasyncmap(char **argv)
 {
     lcp_wantoptions[0].neg_asyncmap = 0;
     lcp_allowoptions[0].neg_asyncmap = 0;
@@ -857,13 +1145,12 @@ noasyncmap()
 
 
 /*
- * noipaddr - Disable IP address negotiation.
+ * noip - Disable IP and IPCP.
  */
 static int
-noipaddr()
+noip(char **argv)
 {
-    ipcp_wantoptions[0].neg_addr = 0;
-    ipcp_allowoptions[0].neg_addr = 0;
+    ipcp_protent.enabled_flag = 0;
     return (1);
 }
 
@@ -872,7 +1159,7 @@ noipaddr()
  * nomagicnumber - Disable magic number negotiation.
  */
 static int
-nomagicnumber()
+nomagicnumber(char **argv)
 {
     lcp_wantoptions[0].neg_magicnumber = 0;
     lcp_allowoptions[0].neg_magicnumber = 0;
@@ -884,7 +1171,7 @@ nomagicnumber()
  * nomru - Disable mru negotiation.
  */
 static int
-nomru()
+nomru(char **argv)
 {
     lcp_wantoptions[0].neg_mru = 0;
     lcp_allowoptions[0].neg_mru = 0;
@@ -896,8 +1183,7 @@ nomru()
  * setmru - Set MRU for negotiation.
  */
 static int
-setmru(argv)
-    char **argv;
+setmru(char **argv)
 {
     u_int32_t mru;
 
@@ -913,28 +1199,42 @@ setmru(argv)
  * setmru - Set the largest MTU we'll use.
  */
 static int
-setmtu(argv)
-    char **argv;
+setmtu(char **argv)
 {
     u_int32_t mtu;
 
     if (!number_option(*argv, &mtu, 0))
 	return 0;
     if (mtu < MINMRU || mtu > MAXMRU) {
-	fprintf(stderr, "mtu option value of %ld is too %s\n", mtu,
-		(mtu < MINMRU? "small": "large"));
+	option_error("mtu option value of %u is too %s", mtu,
+		     (mtu < MINMRU? "small": "large"));
 	return 0;
     }
     lcp_allowoptions[0].mru = mtu;
     return (1);
 }
 
+#ifdef CBCP_SUPPORT
+static int
+setcbcp(argv)
+    char **argv;
+{
+    lcp_wantoptions[0].neg_cbcp = 1;
+    cbcp_protent.enabled_flag = 1;
+    cbcp[0].us_number = strdup(*argv);
+    if (cbcp[0].us_number == 0)
+	novm("callback number");
+    cbcp[0].us_type |= (1 << CB_CONF_USER);
+    cbcp[0].us_type |= (1 << CB_CONF_ADMIN);
+    return (1);
+}
+#endif
 
 /*
  * nopcomp - Disable Protocol field compression negotiation.
  */
 static int
-nopcomp()
+nopcomp(char **argv)
 {
     lcp_wantoptions[0].neg_pcompression = 0;
     lcp_allowoptions[0].neg_pcompression = 0;
@@ -947,7 +1247,7 @@ nopcomp()
  * LCP configure-requests).
  */
 static int
-setpassive()
+setpassive(char **argv)
 {
     lcp_wantoptions[0].passive = 1;
     return (1);
@@ -959,7 +1259,7 @@ setpassive()
  * until we get one from the peer).
  */
 static int
-setsilent()
+setsilent(char **argv)
 {
     lcp_wantoptions[0].silent = 1;
     return 1;
@@ -970,9 +1270,9 @@ setsilent()
  * nopap - Disable PAP authentication with peer.
  */
 static int
-nopap()
+nopap(char **argv)
 {
-    lcp_allowoptions[0].neg_upap = 0;
+    refuse_pap = 1;
     return (1);
 }
 
@@ -981,64 +1281,20 @@ nopap()
  * reqpap - Require PAP authentication from peer.
  */
 static int
-reqpap()
+reqpap(char **argv)
 {
     lcp_wantoptions[0].neg_upap = 1;
-    auth_required = 1;
+    setauth(NULL);
     return 1;
 }
-
-
-/*
- * setupapfile - specifies UPAP info for authenticating with peer.
- */
-static int
-setupapfile(argv)
-    char **argv;
-{
-    FILE * ufile;
-    int l;
-
-    lcp_allowoptions[0].neg_upap = 1;
-
-    /* open user info file */
-    if ((ufile = fopen(*argv, "r")) == NULL) {
-	fprintf(stderr, "unable to open user login data file %s\n", *argv);
-	return 0;
-    }
-    if (!readable(fileno(ufile))) {
-	fprintf(stderr, "%s: access denied\n", *argv);
-	return 0;
-    }
-    check_access(ufile, *argv);
-
-    /* get username */
-    if (fgets(user, MAXNAMELEN - 1, ufile) == NULL
-	|| fgets(passwd, MAXSECRETLEN - 1, ufile) == NULL){
-	fprintf(stderr, "Unable to read user login data file %s.\n", *argv);
-	return 0;
-    }
-    fclose(ufile);
-
-    /* get rid of newlines */
-    l = strlen(user);
-    if (l > 0 && user[l-1] == '\n')
-	user[l-1] = 0;
-    l = strlen(passwd);
-    if (l > 0 && passwd[l-1] == '\n')
-	passwd[l-1] = 0;
-
-    return (1);
-}
-
 
 /*
  * nochap - Disable CHAP authentication with peer.
  */
 static int
-nochap()
+nochap(char **argv)
 {
-    lcp_allowoptions[0].neg_chap = 0;
+    refuse_chap = 1;
     return (1);
 }
 
@@ -1047,10 +1303,10 @@ nochap()
  * reqchap - Require CHAP authentication from peer.
  */
 static int
-reqchap()
+reqchap(char **argv)
 {
     lcp_wantoptions[0].neg_chap = 1;
-    auth_required = 1;
+    setauth(NULL);
     return (1);
 }
 
@@ -1059,7 +1315,7 @@ reqchap()
  * setnovj - disable vj compression
  */
 static int
-setnovj()
+setnovj(char **argv)
 {
     ipcp_wantoptions[0].neg_vj = 0;
     ipcp_allowoptions[0].neg_vj = 0;
@@ -1071,7 +1327,7 @@ setnovj()
  * setnovjccomp - disable VJ connection-ID compression
  */
 static int
-setnovjccomp()
+setnovjccomp(char **argv)
 {
     ipcp_wantoptions[0].cflag = 0;
     ipcp_allowoptions[0].cflag = 0;
@@ -1083,15 +1339,14 @@ setnovjccomp()
  * setvjslots - set maximum number of connection slots for VJ compression
  */
 static int
-setvjslots(argv)
-    char **argv;
+setvjslots(char **argv)
 {
     int value;
 
     if (!int_option(*argv, &value))
 	return 0;
     if (value < 2 || value > 16) {
-	fprintf(stderr, "pppd: vj-max-slots value must be between 2 and 16\n");
+	option_error("vj-max-slots value must be between 2 and 16");
 	return 0;
     }
     ipcp_wantoptions [0].maxslotindex =
@@ -1104,13 +1359,14 @@ setvjslots(argv)
  * setconnector - Set a program to connect to a serial line
  */
 static int
-setconnector(argv)
-    char **argv;
+setconnector(char **argv)
 {
     connector = strdup(*argv);
     if (connector == NULL)
-	novm("connector string");
-  
+	novm("connect script");
+    connector_info.priv = privileged_option;
+    connector_info.source = option_source;
+
     return (1);
 }
 
@@ -1118,29 +1374,69 @@ setconnector(argv)
  * setdisconnector - Set a program to disconnect from the serial line
  */
 static int
-setdisconnector(argv)
-    char **argv;
+setdisconnector(char **argv)
 {
     disconnector = strdup(*argv);
     if (disconnector == NULL)
-	novm("disconnector string");
+	novm("disconnect script");
+    disconnector_info.priv = privileged_option;
+    disconnector_info.source = option_source;
   
     return (1);
 }
 
+/*
+ * setwelcomer - Set a program to welcome a client after connection
+ */
+static int
+setwelcomer(char **argv)
+{
+    welcomer = strdup(*argv);
+    if (welcomer == NULL)
+	novm("welcome script");
+    welcomer_info.priv = privileged_option;
+    welcomer_info.source = option_source;
+
+    return (1);
+}
+
+/*
+ * setmaxconnect - Set the maximum connect time
+ */
+static int
+setmaxconnect(char **argv)
+{
+    int value;
+
+    if (!int_option(*argv, &value))
+	return 0;
+    if (value < 0) {
+	option_error("maxconnect time must be positive");
+	return 0;
+    }
+    if (maxconnect > 0 && (value == 0 || value > maxconnect)) {
+	option_error("maxconnect time cannot be increased");
+	return 0;
+    }
+    maxconnect = value;
+    return 1;
+}
 
 /*
  * setdomain - Set domain name to append to hostname 
  */
 static int
-setdomain(argv)
-    char **argv;
+setdomain(char **argv)
 {
+    if (!privileged_option) {
+	option_error("using the domain option requires root privilege");
+	return 0;
+    }
     gethostname(hostname, MAXNAMELEN);
     if (**argv != 0) {
 	if (**argv != '.')
-	    strncat(hostname, ".", MAXNAMELEN - strlen(hostname));
-	strncat(hostname, *argv, MAXNAMELEN - strlen(hostname));
+	    strlcat(hostname, ".", MAXNAMELEN);
+	strlcat(hostname, *argv, MAXNAMELEN);
     }
     hostname[MAXNAMELEN-1] = 0;
     return (1);
@@ -1151,8 +1447,7 @@ setdomain(argv)
  * setasyncmap - add bits to asyncmap (what we request peer to escape).
  */
 static int
-setasyncmap(argv)
-    char **argv;
+setasyncmap(char **argv)
 {
     u_int32_t asyncmap;
 
@@ -1168,8 +1463,7 @@ setasyncmap(argv)
  * setescape - add chars to the set we escape on transmission.
  */
 static int
-setescape(argv)
-    char **argv;
+setescape(char **argv)
 {
     int n, ret;
     char *p, *endp;
@@ -1179,12 +1473,13 @@ setescape(argv)
     while (*p) {
 	n = strtol(p, &endp, 16);
 	if (p == endp) {
-	    fprintf(stderr, "%s: invalid hex number: %s\n", progname, p);
+	    option_error("escape parameter contains invalid hex number '%s'",
+			 p);
 	    return 0;
 	}
 	p = endp;
-	if (n < 0 || 0x20 <= n && n <= 0x3F || n == 0x5E || n > 0xFF) {
-	    fprintf(stderr, "%s: can't escape character 0x%x\n", progname, n);
+	if (n < 0 || (0x20 <= n && n <= 0x3F) || n == 0x5E || n > 0xFF) {
+	    option_error("can't escape character 0x%x", n);
 	    ret = 0;
 	} else
 	    xmit_accm[0][n >> 5] |= 1 << (n & 0x1F);
@@ -1199,8 +1494,7 @@ setescape(argv)
  * setspeed - Set the speed.
  */
 static int
-setspeed(arg)
-    char *arg;
+setspeed(char *arg)
 {
     char *ptr;
     int spd;
@@ -1216,18 +1510,18 @@ setspeed(arg)
 /*
  * setdevname - Set the device name.
  */
-int
-setdevname(cp)
-    char *cp;
+static int
+setdevname(char *cp, int quiet)
 {
     struct stat statbuf;
-    char *tty, *ttyname();
-    char dev[MAXPATHLEN];
-  
+    char dev[PATH_MAX];
+
+    if (*cp == 0)
+	return 0;
+
     if (strncmp("/dev/", cp, 5) != 0) {
-	strcpy(dev, "/dev/");
-	strncat(dev, cp, MAXPATHLEN - 5);
-	dev[MAXPATHLEN-1] = 0;
+	strlcpy(dev, "/dev/", sizeof dev);
+	strlcat(dev, cp, sizeof dev);
 	cp = dev;
     }
 
@@ -1235,15 +1529,16 @@ setdevname(cp)
      * Check if there is a device by this name.
      */
     if (stat(cp, &statbuf) < 0) {
-	if (errno == ENOENT)
+	if (errno == ENOENT || quiet)
 	    return 0;
-	syslog(LOG_ERR, cp);
+	option_error("Couldn't stat %s: %m", cp);
 	return -1;
     }
-  
-    (void) strncpy(devnam, cp, MAXPATHLEN);
-    devnam[MAXPATHLEN-1] = 0;
+
+    (void) strlcpy(devnam, cp, PATH_MAX);
     default_device = FALSE;
+    devnam_info.priv = privileged_option;
+    devnam_info.source = option_source;
   
     return 1;
 }
@@ -1252,12 +1547,12 @@ setdevname(cp)
 /*
  * setipaddr - Set the IP address
  */
-int
-setipaddr(arg)
-    char *arg;
+static int
+setipaddr(char *arg)
 {
     struct hostent *hp;
     char *colon;
+    struct in_addr ina;
     u_int32_t local, remote;
     ipcp_options *wo = &ipcp_wantoptions[0];
   
@@ -1272,20 +1567,19 @@ setipaddr(arg)
      */
     if (colon != arg) {
 	*colon = '\0';
-	if ((local = inet_addr(arg)) == -1) {
+	if (inet_pton(AF_INET, arg, &ina) != 1) {
 	    if ((hp = gethostbyname(arg)) == NULL) {
-		fprintf(stderr, "unknown host: %s\n", arg);
+		option_error("unknown host: %s", arg);
 		return -1;
 	    } else {
 		local = *(u_int32_t *)hp->h_addr;
-		if (our_name[0] == 0) {
-		    strncpy(our_name, arg, MAXNAMELEN);
-		    our_name[MAXNAMELEN-1] = 0;
-		}
+		if (our_name[0] == 0)
+		    strlcpy(our_name, arg, MAXNAMELEN);
 	    }
-	}
+	} else
+	    local = ina.s_addr;
 	if (bad_ip_adrs(local)) {
-	    fprintf(stderr, "bad local IP address %s\n", ip_ntoa(local));
+	    option_error("bad local IP address %s", ip_ntoa(local));
 	    return -1;
 	}
 	if (local != 0)
@@ -1297,20 +1591,19 @@ setipaddr(arg)
      * If colon last character, then no remote addr.
      */
     if (*++colon != '\0') {
-	if ((remote = inet_addr(colon)) == -1) {
+	if (inet_pton(AF_INET, colon, &ina) != 1) {
 	    if ((hp = gethostbyname(colon)) == NULL) {
-		fprintf(stderr, "unknown host: %s\n", colon);
+		option_error("unknown host: %s", colon);
 		return -1;
 	    } else {
 		remote = *(u_int32_t *)hp->h_addr;
-		if (remote_name[0] == 0) {
-		    strncpy(remote_name, colon, MAXNAMELEN);
-		    remote_name[MAXNAMELEN-1] = 0;
-		}
+		if (remote_name[0] == 0)
+		    strlcpy(remote_name, colon, MAXNAMELEN);
 	    }
-	}
+	} else
+	    remote = ina.s_addr;
 	if (bad_ip_adrs(remote)) {
-	    fprintf(stderr, "bad remote IP address %s\n", ip_ntoa(remote));
+	    option_error("bad remote IP address %s", ip_ntoa(remote));
 	    return -1;
 	}
 	if (remote != 0)
@@ -1325,7 +1618,7 @@ setipaddr(arg)
  * setnoipdflt - disable setipdefault()
  */
 static int
-setnoipdflt()
+setnoipdflt(char **argv)
 {
     disable_defaultip = 1;
     return 1;
@@ -1336,7 +1629,7 @@ setnoipdflt()
  * setipcpaccl - accept peer's idea of our address
  */
 static int
-setipcpaccl()
+setipcpaccl(char **argv)
 {
     ipcp_wantoptions[0].accept_local = 1;
     return 1;
@@ -1347,7 +1640,7 @@ setipcpaccl()
  * setipcpaccr - accept peer's idea of its address
  */
 static int
-setipcpaccr()
+setipcpaccr(char **argv)
 {
     ipcp_wantoptions[0].accept_remote = 1;
     return 1;
@@ -1355,153 +1648,159 @@ setipcpaccr()
 
 
 /*
- * setipdefault - default our local IP address based on our hostname.
- */
-void
-setipdefault()
-{
-    struct hostent *hp;
-    u_int32_t local;
-    ipcp_options *wo = &ipcp_wantoptions[0];
-
-    /*
-     * If local IP address already given, don't bother.
-     */
-    if (wo->ouraddr != 0 || disable_defaultip)
-	return;
-
-    /*
-     * Look up our hostname (possibly with domain name appended)
-     * and take the first IP address as our local IP address.
-     * If there isn't an IP address for our hostname, too bad.
-     */
-    wo->accept_local = 1;	/* don't insist on this default value */
-    if ((hp = gethostbyname(hostname)) == NULL)
-	return;
-    local = *(u_int32_t *)hp->h_addr;
-    if (local != 0 && !bad_ip_adrs(local))
-	wo->ouraddr = local;
-}
-
-
-/*
  * setnetmask - set the netmask to be used on the interface.
  */
 static int
-setnetmask(argv)
-    char **argv;
+setnetmask(char **argv)
 {
-    u_int32_t mask;
+    struct in_addr ina;
 
-    if ((mask = inet_addr(*argv)) == -1 || (netmask & ~mask) != 0) {
-	fprintf(stderr, "Invalid netmask %s\n", *argv);
-	return 0;
+    if (inet_pton(AF_INET, *argv, &ina) != 1 || (netmask & ~ina.s_addr) != 0) {
+	option_error("invalid netmask value '%s'", *argv);
+	return (0);
     }
 
-    netmask = mask;
+    netmask = ina.s_addr;
     return (1);
 }
 
 static int
-setcrtscts()
+setcrtscts(char **argv)
 {
     crtscts = 1;
     return (1);
 }
 
 static int
-setnocrtscts()
+setnocrtscts(char **argv)
 {
     crtscts = -1;
     return (1);
 }
 
 static int
-setxonxoff()
+setxonxoff(char **argv)
 {
     lcp_wantoptions[0].asyncmap |= 0x000A0000;	/* escape ^S and ^Q */
     lcp_wantoptions[0].neg_asyncmap = 1;
 
-    crtscts = 2;
+    crtscts = -2;
     return (1);
 }
 
 static int
-setnodetach()
+setnodetach(char **argv)
 {
     nodetach = 1;
     return (1);
 }
 
 static int
-setmodem()
+setupdetach(char **argv)
+{
+    nodetach = -1;
+    return (1);
+}
+
+static int
+setdemand(char **argv)
+{
+    demand = 1;
+    persist = 1;
+    return 1;
+}
+
+static int
+setmodem(char **argv)
 {
     modem = 1;
     return 1;
 }
 
 static int
-setlocal()
+setmodem_chat(char **argv)
+{
+    modem_chat = 1;
+    return 1;
+}
+
+static int
+setlocal(char **argv)
 {
     modem = 0;
     return 1;
 }
 
 static int
-setlock()
+setlock(char **argv)
 {
     lockflag = 1;
     return 1;
 }
 
 static int
-setusehostname()
+setusehostname(char **argv)
 {
     usehostname = 1;
     return 1;
 }
 
 static int
-setname(argv)
-    char **argv;
+setname(char **argv)
 {
-    if (our_name[0] == 0) {
-	strncpy(our_name, argv[0], MAXNAMELEN);
-	our_name[MAXNAMELEN-1] = 0;
+    if (!privileged_option) {
+	option_error("using the name option requires root privilege");
+	return 0;
+    }
+    strlcpy(our_name, argv[0], MAXNAMELEN);
+    return 1;
+}
+
+static int
+setuser(char **argv)
+{
+    strlcpy(user, argv[0], MAXNAMELEN);
+    return 1;
+}
+
+static int
+setremote(char **argv)
+{
+    strlcpy(remote_name, argv[0], MAXNAMELEN);
+    return 1;
+}
+
+static int
+setauth(char **argv)
+{
+    auth_required = 1;
+    if (privileged_option > auth_req_info.priv) {
+	auth_req_info.priv = privileged_option;
+	auth_req_info.source = option_source;
     }
     return 1;
 }
 
 static int
-setuser(argv)
-    char **argv;
+setnoauth(char **argv)
 {
-    strncpy(user, argv[0], MAXNAMELEN);
-    user[MAXNAMELEN-1] = 0;
+    if (auth_required && privileged_option < auth_req_info.priv) {
+	if (auth_req_info.source == NULL)
+	    option_error("cannot override default auth option");
+	else
+	    option_error("cannot override auth option set by %s",
+	        auth_req_info.source);
+	return 0;
+    }
+    auth_required = 0;
     return 1;
 }
 
 static int
-setremote(argv)
-    char **argv;
-{
-    strncpy(remote_name, argv[0], MAXNAMELEN);
-    remote_name[MAXNAMELEN-1] = 0;
-    return 1;
-}
-
-static int
-setauth()
-{
-    auth_required = 1;
-    return 1;
-}
-
-static int
-setdefaultroute()
+setdefaultroute(char **argv)
 {
     if (!ipcp_allowoptions[0].default_route) {
-	fprintf(stderr, "%s: defaultroute option is disabled\n", progname);
+	option_error("defaultroute option is disabled");
 	return 0;
     }
     ipcp_wantoptions[0].default_route = 1;
@@ -1509,7 +1808,7 @@ setdefaultroute()
 }
 
 static int
-setnodefaultroute()
+setnodefaultroute(char **argv)
 {
     ipcp_allowoptions[0].default_route = 0;
     ipcp_wantoptions[0].default_route = 0;
@@ -1517,10 +1816,10 @@ setnodefaultroute()
 }
 
 static int
-setproxyarp()
+setproxyarp(char **argv)
 {
     if (!ipcp_allowoptions[0].proxy_arp) {
-	fprintf(stderr, "%s: proxyarp option is disabled\n", progname);
+	option_error("proxyarp option is disabled");
 	return 0;
     }
     ipcp_wantoptions[0].proxy_arp = 1;
@@ -1528,7 +1827,7 @@ setproxyarp()
 }
 
 static int
-setnoproxyarp()
+setnoproxyarp(char **argv)
 {
     ipcp_wantoptions[0].proxy_arp = 0;
     ipcp_allowoptions[0].proxy_arp = 0;
@@ -1536,14 +1835,21 @@ setnoproxyarp()
 }
 
 static int
-setpersist()
+setpersist(char **argv)
 {
     persist = 1;
     return 1;
 }
 
 static int
-setdologin()
+setnopersist(char **argv)
+{
+    persist = 0;
+    return 1;
+}
+
+static int
+setdologin(char **argv)
 {
     uselogin = 1;
     return 1;
@@ -1554,15 +1860,13 @@ setdologin()
  */
 
 static int
-setlcpechointv(argv)
-    char **argv;
+setlcpechointv(char **argv)
 {
     return int_option(*argv, &lcp_echo_interval);
 }
 
 static int
-setlcpechofails(argv)
-    char **argv;
+setlcpechofails(char **argv)
 {
     return int_option(*argv, &lcp_echo_fails);
 }
@@ -1571,106 +1875,98 @@ setlcpechofails(argv)
  * Functions to set timeouts, max transmits, etc.
  */
 static int
-setlcptimeout(argv)
-    char **argv;
+setlcptimeout(char **argv)
 {
     return int_option(*argv, &lcp_fsm[0].timeouttime);
 }
 
 static int
-setlcpterm(argv)
-    char **argv;
+setlcpterm(char **argv)
 {
     return int_option(*argv, &lcp_fsm[0].maxtermtransmits);
 }
 
 static int
-setlcpconf(argv)
-    char **argv;
+setlcpconf(char **argv)
 {
     return int_option(*argv, &lcp_fsm[0].maxconfreqtransmits);
 }
 
 static int
-setlcpfails(argv)
-    char **argv;
+setlcpfails(char **argv)
 {
     return int_option(*argv, &lcp_fsm[0].maxnakloops);
 }
 
 static int
-setipcptimeout(argv)
-    char **argv;
+setipcptimeout(char **argv)
 {
     return int_option(*argv, &ipcp_fsm[0].timeouttime);
 }
 
 static int
-setipcpterm(argv)
-    char **argv;
+setipcpterm(char **argv)
 {
     return int_option(*argv, &ipcp_fsm[0].maxtermtransmits);
 }
 
 static int
-setipcpconf(argv)
-    char **argv;
+setipcpconf(char **argv)
 {
     return int_option(*argv, &ipcp_fsm[0].maxconfreqtransmits);
 }
 
 static int
-setipcpfails(argv)
-    char **argv;
+setipcpfails(char **argv)
 {
     return int_option(*argv, &lcp_fsm[0].maxnakloops);
 }
 
 static int
-setpaptimeout(argv)
-    char **argv;
+setpaptimeout(char **argv)
 {
     return int_option(*argv, &upap[0].us_timeouttime);
 }
 
 static int
-setpapreqtime(argv)
-    char **argv;
+setpapreqtime(char **argv)
 {
     return int_option(*argv, &upap[0].us_reqtimeout);
 }
 
 static int
-setpapreqs(argv)
-    char **argv;
+setpapreqs(char **argv)
 {
     return int_option(*argv, &upap[0].us_maxtransmits);
 }
 
 static int
-setchaptimeout(argv)
-    char **argv;
+setchaptimeout(char **argv)
 {
     return int_option(*argv, &chap[0].timeouttime);
 }
 
 static int
-setchapchal(argv)
-    char **argv;
+setchapchal(char **argv)
 {
     return int_option(*argv, &chap[0].max_transmits);
 }
 
 static int
-setchapintv(argv)
-    char **argv;
+setchapintv(char **argv)
 {
     return int_option(*argv, &chap[0].chal_interval);
 }
 
 static int
-setbsdcomp(argv)
-    char **argv;
+noccp(char **argv)
+{
+    ccp_protent.enabled_flag = 0;
+    return 1;
+}
+
+static int
+setbsdcomp(char **argv)
 {
     int rbits, abits;
     char *str, *endp;
@@ -1682,14 +1978,13 @@ setbsdcomp(argv)
 	abits = strtol(str, &endp, 0);
     }
     if (*endp != 0 || endp == str) {
-	fprintf(stderr, "%s: invalid argument format for bsdcomp option\n",
-		progname);
+	option_error("invalid parameter '%s' for bsdcomp option", *argv);
 	return 0;
     }
-    if (rbits != 0 && (rbits < BSD_MIN_BITS || rbits > BSD_MAX_BITS)
-	|| abits != 0 && (abits < BSD_MIN_BITS || abits > BSD_MAX_BITS)) {
-	fprintf(stderr, "%s: bsdcomp option values must be 0 or %d .. %d\n",
-		progname, BSD_MIN_BITS, BSD_MAX_BITS);
+    if ((rbits != 0 && (rbits < BSD_MIN_BITS || rbits > BSD_MAX_BITS))
+	|| (abits != 0 && (abits < BSD_MIN_BITS || abits > BSD_MAX_BITS))) {
+	option_error("bsdcomp option values must be 0 or %d .. %d",
+		     BSD_MIN_BITS, BSD_MAX_BITS);
 	return 0;
     }
     if (rbits > 0) {
@@ -1706,7 +2001,7 @@ setbsdcomp(argv)
 }
 
 static int
-setnobsdcomp()
+setnobsdcomp(char **argv)
 {
     ccp_wantoptions[0].bsd_compress = 0;
     ccp_allowoptions[0].bsd_compress = 0;
@@ -1714,8 +2009,75 @@ setnobsdcomp()
 }
 
 static int
-setipparam(argv)
-    char **argv;
+setdeflate(char **argv)
+{
+    int rbits, abits;
+    char *str, *endp;
+
+    str = *argv;
+    abits = rbits = strtol(str, &endp, 0);
+    if (endp != str && *endp == ',') {
+	str = endp + 1;
+	abits = strtol(str, &endp, 0);
+    }
+    if (*endp != 0 || endp == str) {
+	option_error("invalid parameter '%s' for deflate option", *argv);
+	return 0;
+    }
+    if ((rbits != 0 && (rbits < DEFLATE_MIN_SIZE || rbits > DEFLATE_MAX_SIZE))
+	|| (abits != 0 && (abits < DEFLATE_MIN_SIZE
+			  || abits > DEFLATE_MAX_SIZE))) {
+	option_error("deflate option values must be 0 or %d .. %d",
+		     DEFLATE_MIN_SIZE, DEFLATE_MAX_SIZE);
+	return 0;
+    }
+    if (rbits > 0) {
+	ccp_wantoptions[0].deflate = 1;
+	ccp_wantoptions[0].deflate_size = rbits;
+    } else
+	ccp_wantoptions[0].deflate = 0;
+    if (abits > 0) {
+	ccp_allowoptions[0].deflate = 1;
+	ccp_allowoptions[0].deflate_size = abits;
+    } else
+	ccp_allowoptions[0].deflate = 0;
+    return 1;
+}
+
+static int
+setnodeflate(char **argv)
+{
+    ccp_wantoptions[0].deflate = 0;
+    ccp_allowoptions[0].deflate = 0;
+    return 1;
+}
+
+static int
+setnodeflatedraft(char **argv)
+{
+    ccp_wantoptions[0].deflate_draft = 0;
+    ccp_allowoptions[0].deflate_draft = 0;
+    return 1;
+}
+
+static int
+setpred1comp(char **argv)
+{
+    ccp_wantoptions[0].predictor_1 = 1;
+    ccp_allowoptions[0].predictor_1 = 1;
+    return 1;
+}
+
+static int
+setnopred1comp(char **argv)
+{
+    ccp_wantoptions[0].predictor_1 = 0;
+    ccp_allowoptions[0].predictor_1 = 0;
+    return 1;
+}
+
+static int
+setipparam(char **argv)
 {
     ipparam = strdup(*argv);
     if (ipparam == NULL)
@@ -1725,16 +2087,87 @@ setipparam(argv)
 }
 
 static int
-setpapcrypt()
+setpapcrypt(char **argv)
 {
     cryptpap = 1;
     return 1;
 }
 
-#ifdef _linux_
-static int setidle (argv)
-    char **argv;
+static int
+setidle(char **argv)
 {
     return int_option(*argv, &idle_time_limit);
+}
+
+static int
+setholdoff(char **argv)
+{
+    return int_option(*argv, &holdoff);
+}
+
+/*
+ * setdnsaddr - set the dns address(es)
+ */
+static int
+setdnsaddr(char **argv)
+{
+    struct in_addr ina;
+    struct hostent *hp;
+
+    if (inet_pton(AF_INET, *argv, &ina) != 1) {
+	if ((hp = gethostbyname(*argv)) == NULL) {
+	    option_error("invalid address parameter '%s' for ms-dns option",
+			 *argv);
+	    return (0);
+	}
+	ina.s_addr = *(u_int32_t *)hp->h_addr;
+    }
+
+    /* if there is no primary then update it. */
+    if (ipcp_allowoptions[0].dnsaddr[0] == 0)
+	ipcp_allowoptions[0].dnsaddr[0] = ina.s_addr;
+
+    /* always set the secondary address value to the same value. */
+    ipcp_allowoptions[0].dnsaddr[1] = ina.s_addr;
+
+    return (1);
+}
+
+/*
+ * setwinsaddr - set the wins address(es)
+ * This is primrarly used with the Samba package under UNIX or for pointing
+ * the caller to the existing WINS server on a Windows NT platform.
+ */
+static int
+setwinsaddr(char **argv)
+{
+    struct in_addr ina;
+    struct hostent *hp;
+
+    if (inet_pton(AF_INET, *argv, &ina) != 1) {
+	if ((hp = gethostbyname(*argv)) == NULL) {
+	    option_error("invalid address parameter '%s' for ms-wins option",
+			 *argv);
+	    return (0);
+	}
+	ina.s_addr = *(u_int32_t *)hp->h_addr;
+    }
+
+    /* if there is no primary then update it. */
+    if (ipcp_allowoptions[0].winsaddr[0] == 0)
+	ipcp_allowoptions[0].winsaddr[0] = ina.s_addr;
+
+    /* always set the secondary address value to the same value. */
+    ipcp_allowoptions[0].winsaddr[1] = ina.s_addr;
+
+    return (1);
+}
+
+#ifdef MSLANMAN
+static int
+setmslanman(char **argv)
+{
+    ms_lanman = 1;
+    return (1);
 }
 #endif

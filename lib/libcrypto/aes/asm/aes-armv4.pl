@@ -161,18 +161,18 @@ AES_Te:
 .word	0x1B000000, 0x36000000, 0, 0, 0, 0, 0, 0
 .size	AES_Te,.-AES_Te
 
-@ void AES_encrypt(const unsigned char *in, unsigned char *out,
-@ 		 const AES_KEY *key) {
-.global AES_encrypt
-.type   AES_encrypt,%function
+@ void aes_encrypt_internal(const unsigned char *in, unsigned char *out,
+@     const AES_KEY *key) {
+.global aes_encrypt_internal
+.type   aes_encrypt_internal,%function
 .align	5
-AES_encrypt:
-	sub	r3,pc,#8		@ AES_encrypt
+aes_encrypt_internal:
+	sub	r3,pc,#8		@ aes_encrypt_internal
 	stmdb   sp!,{r1,r4-r12,lr}
 	mov	$rounds,r0		@ inp
 	mov	$key,r2
-	sub	$tbl,r3,#AES_encrypt-AES_Te	@ Te
-#if __ARM_ARCH__<7
+	sub	$tbl,r3,#aes_encrypt_internal-AES_Te	@ Te
+#if __ARM_ARCH__<7 || defined(__STRICT_ALIGNMENT)
 	ldrb	$s0,[$rounds,#3]	@ load input data in endian-neutral
 	ldrb	$t1,[$rounds,#2]	@ manner...
 	ldrb	$t2,[$rounds,#1]
@@ -216,7 +216,7 @@ AES_encrypt:
 	bl	_armv4_AES_encrypt
 
 	ldr	$rounds,[sp],#4		@ pop out
-#if __ARM_ARCH__>=7
+#if __ARM_ARCH__>=7 && !defined(__STRICT_ALIGNMENT)
 #ifdef __ARMEL__
 	rev	$s0,$s0
 	rev	$s1,$s1
@@ -265,7 +265,7 @@ AES_encrypt:
 	moveq	pc,lr			@ be binary compatible with V4, yet
 	bx	lr			@ interoperable with Thumb ISA:-)
 #endif
-.size	AES_encrypt,.-AES_encrypt
+.size	aes_encrypt_internal,.-aes_encrypt_internal
 
 .type   _armv4_AES_encrypt,%function
 .align	2
@@ -404,12 +404,12 @@ _armv4_AES_encrypt:
 	ldr	pc,[sp],#4		@ pop and return
 .size	_armv4_AES_encrypt,.-_armv4_AES_encrypt
 
-.global private_AES_set_encrypt_key
-.type   private_AES_set_encrypt_key,%function
+.global aes_set_encrypt_key_internal
+.type   aes_set_encrypt_key_internal,%function
 .align	5
-private_AES_set_encrypt_key:
+aes_set_encrypt_key_internal:
 _armv4_AES_set_encrypt_key:
-	sub	r3,pc,#8		@ AES_set_encrypt_key
+	sub	r3,pc,#8		@ aes_set_encrypt_key_internal
 	teq	r0,#0
 	moveq	r0,#-1
 	beq	.Labrt
@@ -432,7 +432,7 @@ _armv4_AES_set_encrypt_key:
 	mov	lr,r1			@ bits
 	mov	$key,r2			@ key
 
-#if __ARM_ARCH__<7
+#if __ARM_ARCH__<7 || defined(__STRICT_ALIGNMENT)
 	ldrb	$s0,[$rounds,#3]	@ load input data in endian-neutral
 	ldrb	$t1,[$rounds,#2]	@ manner...
 	ldrb	$t2,[$rounds,#1]
@@ -517,7 +517,7 @@ _armv4_AES_set_encrypt_key:
 	b	.Ldone
 
 .Lnot128:
-#if __ARM_ARCH__<7
+#if __ARM_ARCH__<7 || defined(__STRICT_ALIGNMENT)
 	ldrb	$i2,[$rounds,#19]
 	ldrb	$t1,[$rounds,#18]
 	ldrb	$t2,[$rounds,#17]
@@ -588,7 +588,7 @@ _armv4_AES_set_encrypt_key:
 	b	.L192_loop
 
 .Lnot192:
-#if __ARM_ARCH__<7
+#if __ARM_ARCH__<7 || defined(__STRICT_ALIGNMENT)
 	ldrb	$i2,[$rounds,#27]
 	ldrb	$t1,[$rounds,#26]
 	ldrb	$t2,[$rounds,#25]
@@ -679,12 +679,12 @@ _armv4_AES_set_encrypt_key:
 .Labrt:	tst	lr,#1
 	moveq	pc,lr			@ be binary compatible with V4, yet
 	bx	lr			@ interoperable with Thumb ISA:-)
-.size	private_AES_set_encrypt_key,.-private_AES_set_encrypt_key
+.size	aes_set_encrypt_key_internal,.-aes_set_encrypt_key_internal
 
-.global private_AES_set_decrypt_key
-.type   private_AES_set_decrypt_key,%function
+.global aes_set_decrypt_key_internal
+.type   aes_set_decrypt_key_internal,%function
 .align	5
-private_AES_set_decrypt_key:
+aes_set_decrypt_key_internal:
 	str	lr,[sp,#-4]!            @ push lr
 	bl	_armv4_AES_set_encrypt_key
 	teq	r0,#0
@@ -773,7 +773,7 @@ $code.=<<___;
 	moveq	pc,lr			@ be binary compatible with V4, yet
 	bx	lr			@ interoperable with Thumb ISA:-)
 #endif
-.size	private_AES_set_decrypt_key,.-private_AES_set_decrypt_key
+.size	aes_set_decrypt_key_internal,.-aes_set_decrypt_key_internal
 
 .type	AES_Td,%object
 .align	5
@@ -877,18 +877,18 @@ AES_Td:
 .byte	0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d
 .size	AES_Td,.-AES_Td
 
-@ void AES_decrypt(const unsigned char *in, unsigned char *out,
-@ 		 const AES_KEY *key) {
-.global AES_decrypt
-.type   AES_decrypt,%function
+@ void aes_decrypt_internal(const unsigned char *in, unsigned char *out,
+@     const AES_KEY *key) {
+.global aes_decrypt_internal
+.type   aes_decrypt_internal,%function
 .align	5
-AES_decrypt:
-	sub	r3,pc,#8		@ AES_decrypt
+aes_decrypt_internal:
+	sub	r3,pc,#8		@ aes_decrypt_internal
 	stmdb   sp!,{r1,r4-r12,lr}
 	mov	$rounds,r0		@ inp
 	mov	$key,r2
-	sub	$tbl,r3,#AES_decrypt-AES_Td		@ Td
-#if __ARM_ARCH__<7
+	sub	$tbl,r3,#aes_decrypt_internal-AES_Td		@ Td
+#if __ARM_ARCH__<7 || defined(__STRICT_ALIGNMENT)
 	ldrb	$s0,[$rounds,#3]	@ load input data in endian-neutral
 	ldrb	$t1,[$rounds,#2]	@ manner...
 	ldrb	$t2,[$rounds,#1]
@@ -932,7 +932,7 @@ AES_decrypt:
 	bl	_armv4_AES_decrypt
 
 	ldr	$rounds,[sp],#4		@ pop out
-#if __ARM_ARCH__>=7
+#if __ARM_ARCH__>=7 && !defined(__STRICT_ALIGNMENT)
 #ifdef __ARMEL__
 	rev	$s0,$s0
 	rev	$s1,$s1
@@ -981,7 +981,7 @@ AES_decrypt:
 	moveq	pc,lr			@ be binary compatible with V4, yet
 	bx	lr			@ interoperable with Thumb ISA:-)
 #endif
-.size	AES_decrypt,.-AES_decrypt
+.size	aes_decrypt_internal,.-aes_decrypt_internal
 
 .type   _armv4_AES_decrypt,%function
 .align	2

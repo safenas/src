@@ -1,3 +1,4 @@
+/*	$OpenBSD: misc.c,v 1.25 2024/07/12 14:30:27 deraadt Exp $	*/
 /*	$NetBSD: misc.c,v 1.4 1995/03/21 09:04:10 cgd Exp $	*/
 
 /*-
@@ -16,11 +17,7 @@
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 3. All advertising materials mentioning features or use of this software
- *    must display the following acknowledgement:
- *	This product includes software developed by the University of
- *	California, Berkeley and its contributors.
- * 4. Neither the name of the University nor the names of its contributors
+ * 3. Neither the name of the University nor the names of its contributors
  *    may be used to endorse or promote products derived from this software
  *    without specific prior written permission.
  *
@@ -37,70 +34,76 @@
  * SUCH DAMAGE.
  */
 
-#ifndef lint
-#if 0
-static char sccsid[] = "@(#)misc.c	8.3 (Berkeley) 4/2/94";
-#else
-static char rcsid[] = "$NetBSD: misc.c,v 1.4 1995/03/21 09:04:10 cgd Exp $";
-#endif
-#endif /* not lint */
-
 #include <sys/types.h>
+#include <sys/time.h>
 
-#include <err.h>
+#include <errno.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "dd.h"
 #include "extern.h"
 
+/* SIGINFO handler */
 void
-summary()
+sig_summary(int notused)
 {
-	time_t secs;
-	char buf[100];
+	int save_errno = errno;
+	struct timespec elapsed, now;
+	unsigned long long bps, msec;
 
-	(void)time(&secs);
-	if ((secs -= st.start) == 0)
-		secs = 1;
-	/* Use snprintf(3) so that we don't reenter stdio(3). */
-	(void)snprintf(buf, sizeof(buf),
-	    "%u+%u records in\n%u+%u records out\n",
+	if (ddflags & C_NOINFO)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	timespecsub(&now, &st.start, &elapsed);
+
+	if (elapsed.tv_sec > 600)
+		bps = st.bytes / elapsed.tv_sec;
+	else if (elapsed.tv_sec > 0) {
+		/* will overflow at ~ 30 exabytes / second */
+		msec = elapsed.tv_sec * 1000 + elapsed.tv_nsec / 1000000;
+		if (msec == 0)
+			msec = 1;
+		bps = st.bytes * 1000 / msec;
+	} else if (elapsed.tv_nsec > 0)
+		bps = st.bytes * 1000000000 / elapsed.tv_nsec;
+	else
+		bps = st.bytes;
+
+	/* Be async safe: use dprintf(3). */
+	dprintf(STDERR_FILENO, "%zu+%zu records in\n%zu+%zu records out\n",
 	    st.in_full, st.in_part, st.out_full, st.out_part);
-	(void)write(STDERR_FILENO, buf, strlen(buf));
+
 	if (st.swab) {
-		(void)snprintf(buf, sizeof(buf), "%u odd length swab %s\n",
-		     st.swab, (st.swab == 1) ? "block" : "blocks");
-		(void)write(STDERR_FILENO, buf, strlen(buf));
+		dprintf(STDERR_FILENO, "%zu odd length swab %s\n",
+		    st.swab, (st.swab == 1) ? "block" : "blocks");
 	}
 	if (st.trunc) {
-		(void)snprintf(buf, sizeof(buf), "%u truncated %s\n",
-		     st.trunc, (st.trunc == 1) ? "block" : "blocks");
-		(void)write(STDERR_FILENO, buf, strlen(buf));
+		dprintf(STDERR_FILENO, "%zu truncated %s\n",
+		    st.trunc, (st.trunc == 1) ? "block" : "blocks");
 	}
-	(void)snprintf(buf, sizeof(buf),
-	    "%u bytes transferred in %u secs (%u bytes/sec)\n",
-	    st.bytes, secs, st.bytes / secs);
-	(void)write(STDERR_FILENO, buf, strlen(buf));
+	if (!(ddflags & C_NOXFER)) {
+		dprintf(STDERR_FILENO,
+		    "%lld bytes transferred in %lld.%03ld secs "
+		    "(%llu bytes/sec)\n", (long long)st.bytes,
+		    (long long)elapsed.tv_sec, elapsed.tv_nsec / 1000000, bps);
+	}
+	errno = save_errno;
 }
 
-/* ARGSUSED */
+/* SIGINT handler */
 void
-summaryx(notused)
-	int notused;
+sig_terminate(int signo)
 {
-
-	summary();
+	sig_summary(0);
+	_exit(128 + signo);
 }
 
-/* ARGSUSED */
+/* atexit variation to summarize */
 void
-terminate(notused)
-	int notused;
+exit_summary(void)
 {
-
-	exit(0);
+	sig_summary(0);
 }

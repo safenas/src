@@ -1,25 +1,25 @@
-/* crypto/des/des.c */
+/* $OpenBSD: cbc_cksm.c,v 1.11 2024/03/29 01:47:29 joshua Exp $ */
 /* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
  * All rights reserved.
  *
  * This package is an SSL implementation written
  * by Eric Young (eay@cryptsoft.com).
  * The implementation was written so as to conform with Netscapes SSL.
- * 
+ *
  * This library is free for commercial and non-commercial use as long as
  * the following conditions are aheared to.  The following conditions
  * apply to all code found in this distribution, be it the RC4, RSA,
  * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
  * included with this distribution is covered by the same copyright terms
  * except that the holder is Tim Hudson (tjh@cryptsoft.com).
- * 
+ *
  * Copyright remains Eric Young's, and as such any Copyright notices in
  * the code are not to be removed.
  * If this package is used in a product, Eric Young should be given attribution
  * as the author of the parts of the library used.
  * This can be in the form of a textual message at program startup or
  * in documentation (online or textual) provided with the package.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -34,10 +34,10 @@
  *     Eric Young (eay@cryptsoft.com)"
  *    The word 'cryptographic' can be left out if the rouines from the library
  *    being used are not cryptographic related :-).
- * 4. If you include any Windows specific code (or a derivative thereof) from 
+ * 4. If you include any Windows specific code (or a derivative thereof) from
  *    the apps directory (application code) you must include an acknowledgement:
  *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -49,884 +49,974 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- * 
+ *
  * The licence and distribution terms for any publically available version or
  * derivative of this code cannot be changed.  i.e. this code cannot simply be
  * copied and put under another distribution licence
  * [including the GNU Public Licence.]
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <endian.h>
+
 #include <openssl/opensslconf.h>
-#ifndef OPENSSL_SYS_MSDOS
-#ifndef OPENSSL_SYS_VMS
-#include OPENSSL_UNISTD
-#else /* OPENSSL_SYS_VMS */
-#ifdef __DECC
-#include <unistd.h>
-#else /* not __DECC */
-#include <math.h>
-#endif /* __DECC */
-#endif /* OPENSSL_SYS_VMS */
-#else /* OPENSSL_SYS_MSDOS */
-#include <io.h>
-#endif
 
-#include <time.h>
-#include "des_ver.h"
+#include "des_local.h"
 
-#ifdef OPENSSL_SYS_VMS
-#include <types.h>
-#include <stat.h>
-#else
-#ifndef _IRIX
-#include <sys/types.h>
-#endif
-#include <sys/stat.h>
-#endif
-#include <openssl/des.h>
-#include <openssl/rand.h>
-#include <openssl/ui_compat.h>
+void
+DES_cbc_encrypt(const unsigned char *in, unsigned char *out, long length,
+    DES_key_schedule *_schedule, DES_cblock *ivec, int enc)
+{
+	DES_LONG tin0, tin1;
+	DES_LONG tout0, tout1, xor0, xor1;
+	long l = length;
+	DES_LONG tin[2];
+	unsigned char *iv;
 
-void usage(void);
-void doencryption(void);
-int uufwrite(unsigned char *data, int size, unsigned int num, FILE *fp);
-void uufwriteEnd(FILE *fp);
-int uufread(unsigned char *out,int size,unsigned int num,FILE *fp);
-int uuencode(unsigned char *in,int num,unsigned char *out);
-int uudecode(unsigned char *in,int num,unsigned char *out);
-void DES_3cbc_encrypt(DES_cblock *input,DES_cblock *output,long length,
-	DES_key_schedule sk1,DES_key_schedule sk2,
-	DES_cblock *ivec1,DES_cblock *ivec2,int enc);
-#ifdef OPENSSL_SYS_VMS
-#define EXIT(a) exit(a&0x10000000L)
-#else
-#define EXIT(a) exit(a)
-#endif
+	iv = &(*ivec)[0];
 
-#define BUFSIZE (8*1024)
-#define VERIFY  1
-#define KEYSIZ	8
-#define KEYSIZB 1024 /* should hit tty line limit first :-) */
-char key[KEYSIZB+1];
-int do_encrypt,longk=0;
-FILE *DES_IN,*DES_OUT,*CKSUM_OUT;
-char uuname[200];
-unsigned char uubuf[50];
-int uubufnum=0;
-#define INUUBUFN	(45*100)
-#define OUTUUBUF	(65*100)
-unsigned char b[OUTUUBUF];
-unsigned char bb[300];
-DES_cblock cksum={0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
-char cksumname[200]="";
+	if (enc) {
+		c2l(iv, tout0);
+		c2l(iv, tout1);
+		for (l -= 8; l >= 0; l -= 8) {
+			c2l(in, tin0);
+			c2l(in, tin1);
+			tin0 ^= tout0;
+			tin[0] = tin0;
+			tin1 ^= tout1;
+			tin[1] = tin1;
+			DES_encrypt1((DES_LONG *)tin, _schedule, DES_ENCRYPT);
+			tout0 = tin[0];
+			l2c(tout0, out);
+			tout1 = tin[1];
+			l2c(tout1, out);
+		}
+		if (l != -8) {
+			c2ln(in, tin0, tin1, l + 8);
+			tin0 ^= tout0;
+			tin[0] = tin0;
+			tin1 ^= tout1;
+			tin[1] = tin1;
+			DES_encrypt1((DES_LONG *)tin, _schedule, DES_ENCRYPT);
+			tout0 = tin[0];
+			l2c(tout0, out);
+			tout1 = tin[1];
+			l2c(tout1, out);
+		}
+	} else {
+		c2l(iv, xor0);
+		c2l(iv, xor1);
+		for (l -= 8; l >= 0; l -= 8) {
+			c2l(in, tin0);
+			tin[0] = tin0;
+			c2l(in, tin1);
+			tin[1] = tin1;
+			DES_encrypt1((DES_LONG *)tin, _schedule, DES_DECRYPT);
+			tout0 = tin[0] ^ xor0;
+			tout1 = tin[1] ^ xor1;
+			l2c(tout0, out);
+			l2c(tout1, out);
+			xor0 = tin0;
+			xor1 = tin1;
+		}
+		if (l != -8) {
+			c2l(in, tin0);
+			tin[0] = tin0;
+			c2l(in, tin1);
+			tin[1] = tin1;
+			DES_encrypt1((DES_LONG *)tin, _schedule, DES_DECRYPT);
+			tout0 = tin[0] ^ xor0;
+			tout1 = tin[1] ^ xor1;
+			l2cn(tout0, tout1, out, l + 8);
+		}
+	}
+	tin0 = tin1 = tout0 = tout1 = xor0 = xor1 = 0;
+	tin[0] = tin[1] = 0;
+}
+LCRYPTO_ALIAS(DES_cbc_encrypt);
 
-int vflag,cflag,eflag,dflag,kflag,bflag,fflag,sflag,uflag,flag3,hflag,error;
+/* The input and output encrypted as though 64bit cfb mode is being
+ * used.  The extra state information to record how much of the
+ * 64bit block we have used is contained in *num;
+ */
 
-int main(int argc, char **argv)
-	{
-	int i;
-	struct stat ins,outs;
-	char *p;
-	char *in=NULL,*out=NULL;
+void
+DES_ede3_cfb64_encrypt(const unsigned char *in, unsigned char *out,
+    long length, DES_key_schedule *ks1,
+    DES_key_schedule *ks2, DES_key_schedule *ks3,
+    DES_cblock *ivec, int *num, int enc)
+{
+	DES_LONG v0, v1;
+	long l = length;
+	int n = *num;
+	DES_LONG ti[2];
+	unsigned char *iv, c, cc;
 
-	vflag=cflag=eflag=dflag=kflag=hflag=bflag=fflag=sflag=uflag=flag3=0;
-	error=0;
-	memset(key,0,sizeof(key));
+	iv = &(*ivec)[0];
+	if (enc) {
+		while (l--) {
+			if (n == 0) {
+				c2l(iv, v0);
+				c2l(iv, v1);
 
-	for (i=1; i<argc; i++)
-		{
-		p=argv[i];
-		if ((p[0] == '-') && (p[1] != '\0'))
-			{
-			p++;
-			while (*p)
-				{
-				switch (*(p++))
-					{
-				case '3':
-					flag3=1;
-					longk=1;
-					break;
-				case 'c':
-					cflag=1;
-					strncpy(cksumname,p,200);
-					cksumname[sizeof(cksumname)-1]='\0';
-					p+=strlen(cksumname);
-					break;
-				case 'C':
-					cflag=1;
-					longk=1;
-					strncpy(cksumname,p,200);
-					cksumname[sizeof(cksumname)-1]='\0';
-					p+=strlen(cksumname);
-					break;
-				case 'e':
-					eflag=1;
-					break;
-				case 'v':
-					vflag=1;
-					break;
-				case 'E':
-					eflag=1;
-					longk=1;
-					break;
-				case 'd':
-					dflag=1;
-					break;
-				case 'D':
-					dflag=1;
-					longk=1;
-					break;
-				case 'b':
-					bflag=1;
-					break;
-				case 'f':
-					fflag=1;
-					break;
-				case 's':
-					sflag=1;
-					break;
-				case 'u':
-					uflag=1;
-					strncpy(uuname,p,200);
-					uuname[sizeof(uuname)-1]='\0';
-					p+=strlen(uuname);
-					break;
-				case 'h':
-					hflag=1;
-					break;
-				case 'k':
-					kflag=1;
-					if ((i+1) == argc)
-						{
-						fputs("must have a key with the -k option\n",stderr);
-						error=1;
-						}
-					else
-						{
-						int j;
+				ti[0] = v0;
+				ti[1] = v1;
+				DES_encrypt3(ti, ks1, ks2, ks3);
+				v0 = ti[0];
+				v1 = ti[1];
 
-						i++;
-						strncpy(key,argv[i],KEYSIZB);
-						for (j=strlen(argv[i])-1; j>=0; j--)
-							argv[i][j]='\0';
-						}
-					break;
-				default:
-					fprintf(stderr,"'%c' unknown flag\n",p[-1]);
-					error=1;
-					break;
+				iv = &(*ivec)[0];
+				l2c(v0, iv);
+				l2c(v1, iv);
+				iv = &(*ivec)[0];
+			}
+			c = *(in++) ^ iv[n];
+			*(out++) = c;
+			iv[n] = c;
+			n = (n + 1) & 0x07;
+		}
+	} else {
+		while (l--) {
+			if (n == 0) {
+				c2l(iv, v0);
+				c2l(iv, v1);
+
+				ti[0] = v0;
+				ti[1] = v1;
+				DES_encrypt3(ti, ks1, ks2, ks3);
+				v0 = ti[0];
+				v1 = ti[1];
+
+				iv = &(*ivec)[0];
+				l2c(v0, iv);
+				l2c(v1, iv);
+				iv = &(*ivec)[0];
+			}
+			cc = *(in++);
+			c = iv[n];
+			iv[n] = cc;
+			*(out++) = c ^ cc;
+			n = (n + 1) & 0x07;
+		}
+	}
+	v0 = v1 = ti[0] = ti[1] = c = cc = 0;
+	*num = n;
+}
+LCRYPTO_ALIAS(DES_ede3_cfb64_encrypt);
+
+/* This is compatible with the single key CFB-r for DES, even thought that's
+ * not what EVP needs.
+ */
+
+void
+DES_ede3_cfb_encrypt(const unsigned char *in, unsigned char *out,
+    int numbits, long length, DES_key_schedule *ks1,
+    DES_key_schedule *ks2, DES_key_schedule *ks3,
+    DES_cblock *ivec, int enc)
+{
+	DES_LONG d0, d1, v0, v1;
+	unsigned long l = length, n = ((unsigned int)numbits + 7)/8;
+	int num = numbits, i;
+	DES_LONG ti[2];
+	unsigned char *iv;
+	unsigned char ovec[16];
+
+	if (num > 64)
+		return;
+	iv = &(*ivec)[0];
+	c2l(iv, v0);
+	c2l(iv, v1);
+	if (enc) {
+		while (l >= n) {
+			l -= n;
+			ti[0] = v0;
+			ti[1] = v1;
+			DES_encrypt3(ti, ks1, ks2, ks3);
+			c2ln(in, d0, d1, n);
+			in += n;
+			d0 ^= ti[0];
+			d1 ^= ti[1];
+			l2cn(d0, d1, out, n);
+			out += n;
+			/* 30-08-94 - eay - changed because l>>32 and
+			 * l<<32 are bad under gcc :-( */
+			if (num == 32) {
+				v0 = v1;
+				v1 = d0;
+			} else if (num == 64) {
+				v0 = d0;
+				v1 = d1;
+			} else {
+				iv = &ovec[0];
+				l2c(v0, iv);
+				l2c(v1, iv);
+				l2c(d0, iv);
+				l2c(d1, iv);
+				/* shift ovec left most of the bits... */
+				memmove(ovec, ovec + num/8,
+				    8 + (num % 8 ? 1 : 0));
+				/* now the remaining bits */
+				if (num % 8 != 0) {
+					for (i = 0; i < 8; ++i) {
+						ovec[i] <<= num % 8;
+						ovec[i] |= ovec[i + 1] >>
+						    (8 - num % 8);
 					}
 				}
-			}
-		else
-			{
-			if (in == NULL)
-				in=argv[i];
-			else if (out == NULL)
-				out=argv[i];
-			else
-				error=1;
+				iv = &ovec[0];
+				c2l(iv, v0);
+				c2l(iv, v1);
 			}
 		}
-	if (error) usage();
-	/* We either
-	 * do checksum or
-	 * do encrypt or
-	 * do decrypt or
-	 * do decrypt then ckecksum or
-	 * do checksum then encrypt
-	 */
-	if (((eflag+dflag) == 1) || cflag)
-		{
-		if (eflag) do_encrypt=DES_ENCRYPT;
-		if (dflag) do_encrypt=DES_DECRYPT;
-		}
-	else
-		{
-		if (vflag) 
-			{
-#ifndef _Windows			
-			fprintf(stderr,"des(1) built with %s\n",libdes_version);
-#endif			
-			EXIT(1);
-			}
-		else usage();
-		}
-
-#ifndef _Windows			
-	if (vflag) fprintf(stderr,"des(1) built with %s\n",libdes_version);
-#endif			
-	if (	(in != NULL) &&
-		(out != NULL) &&
-#ifndef OPENSSL_SYS_MSDOS
-		(stat(in,&ins) != -1) &&
-		(stat(out,&outs) != -1) &&
-		(ins.st_dev == outs.st_dev) &&
-		(ins.st_ino == outs.st_ino))
-#else /* OPENSSL_SYS_MSDOS */
-		(strcmp(in,out) == 0))
-#endif
-			{
-			fputs("input and output file are the same\n",stderr);
-			EXIT(3);
-			}
-
-	if (!kflag)
-		if (des_read_pw_string(key,KEYSIZB+1,"Enter key:",eflag?VERIFY:0))
-			{
-			fputs("password error\n",stderr);
-			EXIT(2);
-			}
-
-	if (in == NULL)
-		DES_IN=stdin;
-	else if ((DES_IN=fopen(in,"r")) == NULL)
-		{
-		perror("opening input file");
-		EXIT(4);
-		}
-
-	CKSUM_OUT=stdout;
-	if (out == NULL)
-		{
-		DES_OUT=stdout;
-		CKSUM_OUT=stderr;
-		}
-	else if ((DES_OUT=fopen(out,"w")) == NULL)
-		{
-		perror("opening output file");
-		EXIT(5);
-		}
-
-#ifdef OPENSSL_SYS_MSDOS
-	/* This should set the file to binary mode. */
-	{
-#include <fcntl.h>
-	if (!(uflag && dflag))
-		setmode(fileno(DES_IN),O_BINARY);
-	if (!(uflag && eflag))
-		setmode(fileno(DES_OUT),O_BINARY);
-	}
-#endif
-
-	doencryption();
-	fclose(DES_IN);
-	fclose(DES_OUT);
-	EXIT(0);
-	}
-
-void usage(void)
-	{
-	char **u;
-	static const char *Usage[]={
-"des <options> [input-file [output-file]]",
-"options:",
-"-v         : des(1) version number",
-"-e         : encrypt using SunOS compatible user key to DES key conversion.",
-"-E         : encrypt ",
-"-d         : decrypt using SunOS compatible user key to DES key conversion.",
-"-D         : decrypt ",
-"-c[ckname] : generate a cbc_cksum using SunOS compatible user key to",
-"             DES key conversion and output to ckname (stdout default,",
-"             stderr if data being output on stdout).  The checksum is",
-"             generated before encryption and after decryption if used",
-"             in conjunction with -[eEdD].",
-"-C[ckname] : generate a cbc_cksum as for -c but compatible with -[ED].",
-"-k key     : use key 'key'",
-"-h         : the key that is entered will be a hexadecimal number",
-"             that is used directly as the des key",
-"-u[uuname] : input file is uudecoded if -[dD] or output uuencoded data if -[eE]",
-"             (uuname is the filename to put in the uuencode header).",
-"-b         : encrypt using DES in ecb encryption mode, the default is cbc mode.",
-"-3         : encrypt using triple DES encryption.  This uses 2 keys",
-"             generated from the input key.  If the input key is less",
-"             than 8 characters long, this is equivalent to normal",
-"             encryption.  Default is triple cbc, -b makes it triple ecb.",
-NULL
-};
-	for (u=(char **)Usage; *u; u++)
-		{
-		fputs(*u,stderr);
-		fputc('\n',stderr);
-		}
-
-	EXIT(1);
-	}
-
-void doencryption(void)
-	{
-#ifdef _LIBC
-	extern unsigned long time();
-#endif
-
-	register int i;
-	DES_key_schedule ks,ks2;
-	DES_cblock iv,iv2;
-	char *p;
-	int num=0,j,k,l,rem,ll,len,last,ex=0;
-	DES_cblock kk,k2;
-	FILE *O;
-	int Exit=0;
-#ifndef OPENSSL_SYS_MSDOS
-	static unsigned char buf[BUFSIZE+8],obuf[BUFSIZE+8];
-#else
-	static unsigned char *buf=NULL,*obuf=NULL;
-
-	if (buf == NULL)
-		{
-		if (    (( buf=OPENSSL_malloc(BUFSIZE+8)) == NULL) ||
-			((obuf=OPENSSL_malloc(BUFSIZE+8)) == NULL))
-			{
-			fputs("Not enough memory\n",stderr);
-			Exit=10;
-			goto problems;
-			}
-		}
-#endif
-
-	if (hflag)
-		{
-		j=(flag3?16:8);
-		p=key;
-		for (i=0; i<j; i++)
-			{
-			k=0;
-			if ((*p <= '9') && (*p >= '0'))
-				k=(*p-'0')<<4;
-			else if ((*p <= 'f') && (*p >= 'a'))
-				k=(*p-'a'+10)<<4;
-			else if ((*p <= 'F') && (*p >= 'A'))
-				k=(*p-'A'+10)<<4;
-			else
-				{
-				fputs("Bad hex key\n",stderr);
-				Exit=9;
-				goto problems;
-				}
-			p++;
-			if ((*p <= '9') && (*p >= '0'))
-				k|=(*p-'0');
-			else if ((*p <= 'f') && (*p >= 'a'))
-				k|=(*p-'a'+10);
-			else if ((*p <= 'F') && (*p >= 'A'))
-				k|=(*p-'A'+10);
-			else
-				{
-				fputs("Bad hex key\n",stderr);
-				Exit=9;
-				goto problems;
-				}
-			p++;
-			if (i < 8)
-				kk[i]=k;
-			else
-				k2[i-8]=k;
-			}
-		DES_set_key_unchecked(&k2,&ks2);
-		OPENSSL_cleanse(k2,sizeof(k2));
-		}
-	else if (longk || flag3)
-		{
-		if (flag3)
-			{
-			DES_string_to_2keys(key,&kk,&k2);
-			DES_set_key_unchecked(&k2,&ks2);
-			OPENSSL_cleanse(k2,sizeof(k2));
-			}
-		else
-			DES_string_to_key(key,&kk);
-		}
-	else
-		for (i=0; i<KEYSIZ; i++)
-			{
-			l=0;
-			k=key[i];
-			for (j=0; j<8; j++)
-				{
-				if (k&1) l++;
-				k>>=1;
-				}
-			if (l & 1)
-				kk[i]=key[i]&0x7f;
-			else
-				kk[i]=key[i]|0x80;
-			}
-
-	DES_set_key_unchecked(&kk,&ks);
-	OPENSSL_cleanse(key,sizeof(key));
-	OPENSSL_cleanse(kk,sizeof(kk));
-	/* woops - A bug that does not showup under unix :-( */
-	memset(iv,0,sizeof(iv));
-	memset(iv2,0,sizeof(iv2));
-
-	l=1;
-	rem=0;
-	/* first read */
-	if (eflag || (!dflag && cflag))
-		{
-		for (;;)
-			{
-			num=l=fread(&(buf[rem]),1,BUFSIZE,DES_IN);
-			l+=rem;
-			num+=rem;
-			if (l < 0)
-				{
-				perror("read error");
-				Exit=6;
-				goto problems;
-				}
-
-			rem=l%8;
-			len=l-rem;
-			if (feof(DES_IN))
-				{
-				for (i=7-rem; i>0; i--)
-					RAND_pseudo_bytes(buf + l++, 1);
-				buf[l++]=rem;
-				ex=1;
-				len+=rem;
-				}
-			else
-				l-=rem;
-
-			if (cflag)
-				{
-				DES_cbc_cksum(buf,&cksum,
-					(long)len,&ks,&cksum);
-				if (!eflag)
-					{
-					if (feof(DES_IN)) break;
-					else continue;
+	} else {
+		while (l >= n) {
+			l -= n;
+			ti[0] = v0;
+			ti[1] = v1;
+			DES_encrypt3(ti, ks1, ks2, ks3);
+			c2ln(in, d0, d1, n);
+			in += n;
+			/* 30-08-94 - eay - changed because l>>32 and
+			 * l<<32 are bad under gcc :-( */
+			if (num == 32) {
+				v0 = v1;
+				v1 = d0;
+			} else if (num == 64) {
+				v0 = d0;
+				v1 = d1;
+			} else {
+				iv = &ovec[0];
+				l2c(v0, iv);
+				l2c(v1, iv);
+				l2c(d0, iv);
+				l2c(d1, iv);
+				/* shift ovec left most of the bits... */
+				memmove(ovec, ovec + num/8,
+				    8 + (num % 8 ? 1 : 0));
+				/* now the remaining bits */
+				if (num % 8 != 0) {
+					for (i = 0; i < 8; ++i) {
+						ovec[i] <<= num % 8;
+						ovec[i] |= ovec[i + 1] >>
+						    (8 - num % 8);
 					}
 				}
+				iv = &ovec[0];
+				c2l(iv, v0);
+				c2l(iv, v1);
+			}
+			d0 ^= ti[0];
+			d1 ^= ti[1];
+			l2cn(d0, d1, out, n);
+			out += n;
+		}
+	}
+	iv = &(*ivec)[0];
+	l2c(v0, iv);
+	l2c(v1, iv);
+	v0 = v1 = d0 = d1 = ti[0] = ti[1] = 0;
+}
+LCRYPTO_ALIAS(DES_ede3_cfb_encrypt);
 
-			if (bflag && !flag3)
-				for (i=0; i<l; i+=8)
-					DES_ecb_encrypt(
-						(DES_cblock *)&(buf[i]),
-						(DES_cblock *)&(obuf[i]),
-						&ks,do_encrypt);
-			else if (flag3 && bflag)
-				for (i=0; i<l; i+=8)
-					DES_ecb2_encrypt(
-						(DES_cblock *)&(buf[i]),
-						(DES_cblock *)&(obuf[i]),
-						&ks,&ks2,do_encrypt);
-			else if (flag3 && !bflag)
-				{
-				char tmpbuf[8];
+/* The input and output encrypted as though 64bit cfb mode is being
+ * used.  The extra state information to record how much of the
+ * 64bit block we have used is contained in *num;
+ */
 
-				if (rem) memcpy(tmpbuf,&(buf[l]),
-					(unsigned int)rem);
-				DES_3cbc_encrypt(
-					(DES_cblock *)buf,(DES_cblock *)obuf,
-					(long)l,ks,ks2,&iv,
-					&iv2,do_encrypt);
-				if (rem) memcpy(&(buf[l]),tmpbuf,
-					(unsigned int)rem);
-				}
-			else
-				{
-				DES_cbc_encrypt(
-					buf,obuf,
-					(long)l,&ks,&iv,do_encrypt);
-				if (l >= 8) memcpy(iv,&(obuf[l-8]),8);
-				}
-			if (rem) memcpy(buf,&(buf[l]),(unsigned int)rem);
+void
+DES_cfb64_encrypt(const unsigned char *in, unsigned char *out,
+    long length, DES_key_schedule *schedule,
+    DES_cblock *ivec, int *num, int enc)
+{
+	DES_LONG v0, v1;
+	long l = length;
+	int n = *num;
+	DES_LONG ti[2];
+	unsigned char *iv, c, cc;
 
-			i=0;
-			while (i < l)
-				{
-				if (uflag)
-					j=uufwrite(obuf,1,(unsigned int)l-i,
-						DES_OUT);
+	iv = &(*ivec)[0];
+	if (enc) {
+		while (l--) {
+			if (n == 0) {
+				c2l(iv, v0);
+				ti[0] = v0;
+				c2l(iv, v1);
+				ti[1] = v1;
+				DES_encrypt1(ti, schedule, DES_ENCRYPT);
+				iv = &(*ivec)[0];
+				v0 = ti[0];
+				l2c(v0, iv);
+				v0 = ti[1];
+				l2c(v0, iv);
+				iv = &(*ivec)[0];
+			}
+			c = *(in++) ^ iv[n];
+			*(out++) = c;
+			iv[n] = c;
+			n = (n + 1) & 0x07;
+		}
+	} else {
+		while (l--) {
+			if (n == 0) {
+				c2l(iv, v0);
+				ti[0] = v0;
+				c2l(iv, v1);
+				ti[1] = v1;
+				DES_encrypt1(ti, schedule, DES_ENCRYPT);
+				iv = &(*ivec)[0];
+				v0 = ti[0];
+				l2c(v0, iv);
+				v0 = ti[1];
+				l2c(v0, iv);
+				iv = &(*ivec)[0];
+			}
+			cc = *(in++);
+			c = iv[n];
+			iv[n] = cc;
+			*(out++) = c ^ cc;
+			n = (n + 1) & 0x07;
+		}
+	}
+	v0 = v1 = ti[0] = ti[1] = c = cc = 0;
+	*num = n;
+}
+LCRYPTO_ALIAS(DES_cfb64_encrypt);
+
+/* The input and output are loaded in multiples of 8 bits.
+ * What this means is that if you hame numbits=12 and length=2
+ * the first 12 bits will be retrieved from the first byte and half
+ * the second.  The second 12 bits will come from the 3rd and half the 4th
+ * byte.
+ */
+/* Until Aug 1 2003 this function did not correctly implement CFB-r, so it
+ * will not be compatible with any encryption prior to that date. Ben. */
+void
+DES_cfb_encrypt(const unsigned char *in, unsigned char *out, int numbits,
+    long length, DES_key_schedule *schedule, DES_cblock *ivec,
+    int enc)
+{
+	DES_LONG d0, d1, v0, v1;
+	unsigned long l = length;
+	int num = numbits/8, n = (numbits + 7)/8, i, rem = numbits % 8;
+	DES_LONG ti[2];
+	unsigned char *iv;
+#if BYTE_ORDER != LITTLE_ENDIAN
+	unsigned char ovec[16];
+#else
+	unsigned int sh[4];
+	unsigned char *ovec = (unsigned char *)sh;
+#endif
+
+	if (numbits <= 0 || numbits > 64)
+		return;
+	iv = &(*ivec)[0];
+	c2l(iv, v0);
+	c2l(iv, v1);
+	if (enc) {
+		while (l >= (unsigned long)n) {
+			l -= n;
+			ti[0] = v0;
+			ti[1] = v1;
+			DES_encrypt1((DES_LONG *)ti, schedule, DES_ENCRYPT);
+			c2ln(in, d0, d1, n);
+			in += n;
+			d0 ^= ti[0];
+			d1 ^= ti[1];
+			l2cn(d0, d1, out, n);
+			out += n;
+			/* 30-08-94 - eay - changed because l>>32 and
+			 * l<<32 are bad under gcc :-( */
+			if (numbits == 32) {
+				v0 = v1;
+				v1 = d0;
+			} else if (numbits == 64) {
+				v0 = d0;
+				v1 = d1;
+			} else {
+#if BYTE_ORDER != LITTLE_ENDIAN
+				iv = &ovec[0];
+				l2c(v0, iv);
+				l2c(v1, iv);
+				l2c(d0, iv);
+				l2c(d1, iv);
+#else
+				sh[0] = v0, sh[1] = v1, sh[2] = d0, sh[3] = d1;
+#endif
+				if (rem == 0)
+					memmove(ovec, ovec + num, 8);
 				else
-					j=fwrite(obuf,1,(unsigned int)l-i,
-						DES_OUT);
-				if (j == -1)
-					{
-					perror("Write error");
-					Exit=7;
-					goto problems;
-					}
-				i+=j;
-				}
-			if (feof(DES_IN))
-				{
-				if (uflag) uufwriteEnd(DES_OUT);
-				break;
-				}
+					for (i = 0; i < 8; ++i)
+						ovec[i] = ovec[i + num] << rem |
+						    ovec[i + num + 1] >> (8 -
+						    rem);
+#if BYTE_ORDER == LITTLE_ENDIAN
+				v0 = sh[0], v1 = sh[1];
+#else
+				iv = &ovec[0];
+				c2l(iv, v0);
+				c2l(iv, v1);
+#endif
 			}
 		}
-	else /* decrypt */
-		{
-		ex=1;
-		for (;;)
-			{
-			if (ex) {
-				if (uflag)
-					l=uufread(buf,1,BUFSIZE,DES_IN);
+	} else {
+		while (l >= (unsigned long)n) {
+			l -= n;
+			ti[0] = v0;
+			ti[1] = v1;
+			DES_encrypt1((DES_LONG *)ti, schedule, DES_ENCRYPT);
+			c2ln(in, d0, d1, n);
+			in += n;
+			/* 30-08-94 - eay - changed because l>>32 and
+			 * l<<32 are bad under gcc :-( */
+			if (numbits == 32) {
+				v0 = v1;
+				v1 = d0;
+			} else if (numbits == 64) {
+				v0 = d0;
+				v1 = d1;
+			} else {
+#if BYTE_ORDER != LITTLE_ENDIAN
+				iv = &ovec[0];
+				l2c(v0, iv);
+				l2c(v1, iv);
+				l2c(d0, iv);
+				l2c(d1, iv);
+#else
+				sh[0] = v0, sh[1] = v1, sh[2] = d0, sh[3] = d1;
+#endif
+				if (rem == 0)
+					memmove(ovec, ovec + num, 8);
 				else
-					l=fread(buf,1,BUFSIZE,DES_IN);
-				ex=0;
-				rem=l%8;
-				l-=rem;
-				}
-			if (l < 0)
-				{
-				perror("read error");
-				Exit=6;
-				goto problems;
-				}
-
-			if (bflag && !flag3)
-				for (i=0; i<l; i+=8)
-					DES_ecb_encrypt(
-						(DES_cblock *)&(buf[i]),
-						(DES_cblock *)&(obuf[i]),
-						&ks,do_encrypt);
-			else if (flag3 && bflag)
-				for (i=0; i<l; i+=8)
-					DES_ecb2_encrypt(
-						(DES_cblock *)&(buf[i]),
-						(DES_cblock *)&(obuf[i]),
-						&ks,&ks2,do_encrypt);
-			else if (flag3 && !bflag)
-				{
-				DES_3cbc_encrypt(
-					(DES_cblock *)buf,(DES_cblock *)obuf,
-					(long)l,ks,ks2,&iv,
-					&iv2,do_encrypt);
-				}
-			else
-				{
-				DES_cbc_encrypt(
-					buf,obuf,
-				 	(long)l,&ks,&iv,do_encrypt);
-				if (l >= 8) memcpy(iv,&(buf[l-8]),8);
-				}
-
-			if (uflag)
-				ll=uufread(&(buf[rem]),1,BUFSIZE,DES_IN);
-			else
-				ll=fread(&(buf[rem]),1,BUFSIZE,DES_IN);
-			ll+=rem;
-			rem=ll%8;
-			ll-=rem;
-			if (feof(DES_IN) && (ll == 0))
-				{
-				last=obuf[l-1];
-
-				if ((last > 7) || (last < 0))
-					{
-					fputs("The file was not decrypted correctly.\n",
-						stderr);
-					Exit=8;
-					last=0;
-					}
-				l=l-8+last;
-				}
-			i=0;
-			if (cflag) DES_cbc_cksum(obuf,
-				(DES_cblock *)cksum,(long)l/8*8,&ks,
-				(DES_cblock *)cksum);
-			while (i != l)
-				{
-				j=fwrite(obuf,1,(unsigned int)l-i,DES_OUT);
-				if (j == -1)
-					{
-					perror("Write error");
-					Exit=7;
-					goto problems;
-					}
-				i+=j;
-				}
-			l=ll;
-			if ((l == 0) && feof(DES_IN)) break;
+					for (i = 0; i < 8; ++i)
+						ovec[i] = ovec[i + num] << rem |
+						    ovec[i + num + 1] >> (8 -
+						    rem);
+#if BYTE_ORDER == LITTLE_ENDIAN
+				v0 = sh[0], v1 = sh[1];
+#else
+				iv = &ovec[0];
+				c2l(iv, v0);
+				c2l(iv, v1);
+#endif
 			}
+			d0 ^= ti[0];
+			d1 ^= ti[1];
+			l2cn(d0, d1, out, n);
+			out += n;
 		}
-	if (cflag)
-		{
-		l=0;
-		if (cksumname[0] != '\0')
-			{
-			if ((O=fopen(cksumname,"w")) != NULL)
-				{
-				CKSUM_OUT=O;
-				l=1;
-				}
-			}
-		for (i=0; i<8; i++)
-			fprintf(CKSUM_OUT,"%02X",cksum[i]);
-		fprintf(CKSUM_OUT,"\n");
-		if (l) fclose(CKSUM_OUT);
-		}
-problems:
-	OPENSSL_cleanse(buf,sizeof(buf));
-	OPENSSL_cleanse(obuf,sizeof(obuf));
-	OPENSSL_cleanse(&ks,sizeof(ks));
-	OPENSSL_cleanse(&ks2,sizeof(ks2));
-	OPENSSL_cleanse(iv,sizeof(iv));
-	OPENSSL_cleanse(iv2,sizeof(iv2));
-	OPENSSL_cleanse(kk,sizeof(kk));
-	OPENSSL_cleanse(k2,sizeof(k2));
-	OPENSSL_cleanse(uubuf,sizeof(uubuf));
-	OPENSSL_cleanse(b,sizeof(b));
-	OPENSSL_cleanse(bb,sizeof(bb));
-	OPENSSL_cleanse(cksum,sizeof(cksum));
-	if (Exit) EXIT(Exit);
 	}
+	iv = &(*ivec)[0];
+	l2c(v0, iv);
+	l2c(v1, iv);
+	v0 = v1 = d0 = d1 = ti[0] = ti[1] = 0;
+}
+LCRYPTO_ALIAS(DES_cfb_encrypt);
 
-/*    We ignore this parameter but it should be > ~50 I believe    */
-int uufwrite(unsigned char *data, int size, unsigned int num, FILE *fp)
-	{
-	int i,j,left,rem,ret=num;
-	static int start=1;
+void
+DES_ecb3_encrypt(const_DES_cblock *input, DES_cblock *output,
+    DES_key_schedule *ks1, DES_key_schedule *ks2,
+    DES_key_schedule *ks3,
+    int enc)
+{
+	DES_LONG l0, l1;
+	DES_LONG ll[2];
+	const unsigned char *in = &(*input)[0];
+	unsigned char *out = &(*output)[0];
 
-	if (start)
-		{
-		fprintf(fp,"begin 600 %s\n",
-			(uuname[0] == '\0')?"text.d":uuname);
-		start=0;
+	c2l(in, l0);
+	c2l(in, l1);
+	ll[0] = l0;
+	ll[1] = l1;
+	if (enc)
+		DES_encrypt3(ll, ks1, ks2, ks3);
+	else
+		DES_decrypt3(ll, ks1, ks2, ks3);
+	l0 = ll[0];
+	l1 = ll[1];
+	l2c(l0, out);
+	l2c(l1, out);
+}
+LCRYPTO_ALIAS(DES_ecb3_encrypt);
+
+void
+DES_ecb_encrypt(const_DES_cblock *input, DES_cblock *output,
+    DES_key_schedule *ks, int enc)
+{
+	DES_LONG l;
+	DES_LONG ll[2];
+	const unsigned char *in = &(*input)[0];
+	unsigned char *out = &(*output)[0];
+
+	c2l(in, l);
+	ll[0] = l;
+	c2l(in, l);
+	ll[1] = l;
+	DES_encrypt1(ll, ks, enc);
+	l = ll[0];
+	l2c(l, out);
+	l = ll[1];
+	l2c(l, out);
+	l = ll[0] = ll[1] = 0;
+}
+LCRYPTO_ALIAS(DES_ecb_encrypt);
+
+/*
+
+This is an implementation of Triple DES Cipher Block Chaining with Output
+Feedback Masking, by Coppersmith, Johnson and Matyas, (IBM and Certicom).
+
+Note that there is a known attack on this by Biham and Knudsen but it takes
+a lot of work:
+
+http://www.cs.technion.ac.il/users/wwwb/cgi-bin/tr-get.cgi/1998/CS/CS0928.ps.gz
+
+*/
+
+#ifndef OPENSSL_NO_DESCBCM
+void
+DES_ede3_cbcm_encrypt(const unsigned char *in, unsigned char *out,
+    long length, DES_key_schedule *ks1, DES_key_schedule *ks2,
+    DES_key_schedule *ks3, DES_cblock *ivec1, DES_cblock *ivec2,
+    int enc)
+{
+	DES_LONG tin0, tin1;
+	DES_LONG tout0, tout1, xor0, xor1, m0, m1;
+	long l = length;
+	DES_LONG tin[2];
+	unsigned char *iv1, *iv2;
+
+	iv1 = &(*ivec1)[0];
+	iv2 = &(*ivec2)[0];
+
+	if (enc) {
+		c2l(iv1, m0);
+		c2l(iv1, m1);
+		c2l(iv2, tout0);
+		c2l(iv2, tout1);
+		for (l -= 8; l >= -7; l -= 8) {
+			tin[0] = m0;
+			tin[1] = m1;
+			DES_encrypt1(tin, ks3, 1);
+			m0 = tin[0];
+			m1 = tin[1];
+
+			if (l < 0) {
+				c2ln(in, tin0, tin1, l + 8);
+			} else {
+				c2l(in, tin0);
+				c2l(in, tin1);
+			}
+			tin0 ^= tout0;
+			tin1 ^= tout1;
+
+			tin[0] = tin0;
+			tin[1] = tin1;
+			DES_encrypt1(tin, ks1, 1);
+			tin[0] ^= m0;
+			tin[1] ^= m1;
+			DES_encrypt1(tin, ks2, 0);
+			tin[0] ^= m0;
+			tin[1] ^= m1;
+			DES_encrypt1(tin, ks1, 1);
+			tout0 = tin[0];
+			tout1 = tin[1];
+
+			l2c(tout0, out);
+			l2c(tout1, out);
+		}
+		iv1 = &(*ivec1)[0];
+		l2c(m0, iv1);
+		l2c(m1, iv1);
+
+		iv2 = &(*ivec2)[0];
+		l2c(tout0, iv2);
+		l2c(tout1, iv2);
+	} else {
+		DES_LONG t0, t1;
+
+		c2l(iv1, m0);
+		c2l(iv1, m1);
+		c2l(iv2, xor0);
+		c2l(iv2, xor1);
+		for (l -= 8; l >= -7; l -= 8) {
+			tin[0] = m0;
+			tin[1] = m1;
+			DES_encrypt1(tin, ks3, 1);
+			m0 = tin[0];
+			m1 = tin[1];
+
+			c2l(in, tin0);
+			c2l(in, tin1);
+
+			t0 = tin0;
+			t1 = tin1;
+
+			tin[0] = tin0;
+			tin[1] = tin1;
+			DES_encrypt1(tin, ks1, 0);
+			tin[0] ^= m0;
+			tin[1] ^= m1;
+			DES_encrypt1(tin, ks2, 1);
+			tin[0] ^= m0;
+			tin[1] ^= m1;
+			DES_encrypt1(tin, ks1, 0);
+			tout0 = tin[0];
+			tout1 = tin[1];
+
+			tout0 ^= xor0;
+			tout1 ^= xor1;
+			if (l < 0) {
+				l2cn(tout0, tout1, out, l + 8);
+			} else {
+				l2c(tout0, out);
+				l2c(tout1, out);
+			}
+			xor0 = t0;
+			xor1 = t1;
 		}
 
-	if (uubufnum)
-		{
-		if (uubufnum+num < 45)
-			{
-			memcpy(&(uubuf[uubufnum]),data,(unsigned int)num);
-			uubufnum+=num;
-			return(num);
-			}
+		iv1 = &(*ivec1)[0];
+		l2c(m0, iv1);
+		l2c(m1, iv1);
+
+		iv2 = &(*ivec2)[0];
+		l2c(xor0, iv2);
+		l2c(xor1, iv2);
+	}
+	tin0 = tin1 = tout0 = tout1 = xor0 = xor1 = 0;
+	tin[0] = tin[1] = 0;
+}
+LCRYPTO_ALIAS(DES_ede3_cbcm_encrypt);
+#endif
+
+/* The input and output encrypted as though 64bit ofb mode is being
+ * used.  The extra state information to record how much of the
+ * 64bit block we have used is contained in *num;
+ */
+void
+DES_ede3_ofb64_encrypt(const unsigned char *in,
+    unsigned char *out, long length,
+    DES_key_schedule *k1, DES_key_schedule *k2,
+    DES_key_schedule *k3, DES_cblock *ivec,
+    int *num)
+{
+	DES_LONG v0, v1;
+	int n = *num;
+	long l = length;
+	DES_cblock d;
+	char *dp;
+	DES_LONG ti[2];
+	unsigned char *iv;
+	int save = 0;
+
+	iv = &(*ivec)[0];
+	c2l(iv, v0);
+	c2l(iv, v1);
+	ti[0] = v0;
+	ti[1] = v1;
+	dp = (char *)d;
+	l2c(v0, dp);
+	l2c(v1, dp);
+	while (l--) {
+		if (n == 0) {
+			/* ti[0]=v0; */
+			/* ti[1]=v1; */
+			DES_encrypt3(ti, k1, k2, k3);
+			v0 = ti[0];
+			v1 = ti[1];
+
+			dp = (char *)d;
+			l2c(v0, dp);
+			l2c(v1, dp);
+			save++;
+		}
+		*(out++) = *(in++) ^ d[n];
+		n = (n + 1) & 0x07;
+	}
+	if (save) {
+		iv = &(*ivec)[0];
+		l2c(v0, iv);
+		l2c(v1, iv);
+	}
+	v0 = v1 = ti[0] = ti[1] = 0;
+	*num = n;
+}
+LCRYPTO_ALIAS(DES_ede3_ofb64_encrypt);
+
+/* The input and output encrypted as though 64bit ofb mode is being
+ * used.  The extra state information to record how much of the
+ * 64bit block we have used is contained in *num;
+ */
+void
+DES_ofb64_encrypt(const unsigned char *in,
+    unsigned char *out, long length,
+    DES_key_schedule *schedule, DES_cblock *ivec, int *num)
+{
+	DES_LONG v0, v1, t;
+	int n = *num;
+	long l = length;
+	DES_cblock d;
+	unsigned char *dp;
+	DES_LONG ti[2];
+	unsigned char *iv;
+	int save = 0;
+
+	iv = &(*ivec)[0];
+	c2l(iv, v0);
+	c2l(iv, v1);
+	ti[0] = v0;
+	ti[1] = v1;
+	dp = d;
+	l2c(v0, dp);
+	l2c(v1, dp);
+	while (l--) {
+		if (n == 0) {
+			DES_encrypt1(ti, schedule, DES_ENCRYPT);
+			dp = d;
+			t = ti[0];
+			l2c(t, dp);
+			t = ti[1];
+			l2c(t, dp);
+			save++;
+		}
+		*(out++) = *(in++) ^ d[n];
+		n = (n + 1) & 0x07;
+	}
+	if (save) {
+		v0 = ti[0];
+		v1 = ti[1];
+		iv = &(*ivec)[0];
+		l2c(v0, iv);
+		l2c(v1, iv);
+	}
+	t = v0 = v1 = ti[0] = ti[1] = 0;
+	*num = n;
+}
+LCRYPTO_ALIAS(DES_ofb64_encrypt);
+
+/* The input and output are loaded in multiples of 8 bits.
+ * What this means is that if you hame numbits=12 and length=2
+ * the first 12 bits will be retrieved from the first byte and half
+ * the second.  The second 12 bits will come from the 3rd and half the 4th
+ * byte.
+ */
+void
+DES_ofb_encrypt(const unsigned char *in, unsigned char *out, int numbits,
+    long length, DES_key_schedule *schedule,
+    DES_cblock *ivec)
+{
+	DES_LONG d0, d1, vv0, vv1, v0, v1, n = (numbits + 7)/8;
+	DES_LONG mask0, mask1;
+	long l = length;
+	int num = numbits;
+	DES_LONG ti[2];
+	unsigned char *iv;
+
+	if (num > 64)
+		return;
+	if (num > 32) {
+		mask0 = 0xffffffffL;
+		if (num >= 64)
+			mask1 = mask0;
 		else
-			{
-			i=45-uubufnum;
-			memcpy(&(uubuf[uubufnum]),data,(unsigned int)i);
-			j=uuencode((unsigned char *)uubuf,45,b);
-			fwrite(b,1,(unsigned int)j,fp);
-			uubufnum=0;
-			data+=i;
-			num-=i;
-			}
-		}
-
-	for (i=0; i<(((int)num)-INUUBUFN); i+=INUUBUFN)
-		{
-		j=uuencode(&(data[i]),INUUBUFN,b);
-		fwrite(b,1,(unsigned int)j,fp);
-		}
-	rem=(num-i)%45;
-	left=(num-i-rem);
-	if (left)
-		{
-		j=uuencode(&(data[i]),left,b);
-		fwrite(b,1,(unsigned int)j,fp);
-		i+=left;
-		}
-	if (i != num)
-		{
-		memcpy(uubuf,&(data[i]),(unsigned int)rem);
-		uubufnum=rem;
-		}
-	return(ret);
+			mask1 = (1L << (num - 32)) - 1;
+	} else {
+		if (num == 32)
+			mask0 = 0xffffffffL;
+		else
+			mask0 = (1L << num) - 1;
+		mask1 = 0x00000000L;
 	}
 
-void uufwriteEnd(FILE *fp)
-	{
-	int j;
-	static const char *end=" \nend\n";
+	iv = &(*ivec)[0];
+	c2l(iv, v0);
+	c2l(iv, v1);
+	ti[0] = v0;
+	ti[1] = v1;
+	while (l-- > 0) {
+		ti[0] = v0;
+		ti[1] = v1;
+		DES_encrypt1((DES_LONG *)ti, schedule, DES_ENCRYPT);
+		vv0 = ti[0];
+		vv1 = ti[1];
+		c2ln(in, d0, d1, n);
+		in += n;
+		d0 = (d0 ^ vv0) & mask0;
+		d1 = (d1 ^ vv1) & mask1;
+		l2cn(d0, d1, out, n);
+		out += n;
 
-	if (uubufnum != 0)
-		{
-		uubuf[uubufnum]='\0';
-		uubuf[uubufnum+1]='\0';
-		uubuf[uubufnum+2]='\0';
-		j=uuencode(uubuf,uubufnum,b);
-		fwrite(b,1,(unsigned int)j,fp);
+		if (num == 32) {
+			v0 = v1;
+			v1 = vv0;
+		} else if (num == 64) {
+			v0 = vv0;
+			v1 = vv1;
+		} else if (num > 32) { /* && num != 64 */
+			v0 = ((v1 >> (num - 32))|(vv0 << (64 - num))) &
+			    0xffffffffL;
+			v1 = ((vv0 >> (num - 32))|(vv1 << (64 - num))) &
+			    0xffffffffL;
+		} else /* num < 32 */ {
+			v0 = ((v0 >> num)|(v1 << (32 - num))) & 0xffffffffL;
+			v1 = ((v1 >> num)|(vv0 << (32 - num))) & 0xffffffffL;
 		}
-	fwrite(end,1,strlen(end),fp);
 	}
+	iv = &(*ivec)[0];
+	l2c(v0, iv);
+	l2c(v1, iv);
+	v0 = v1 = d0 = d1 = ti[0] = ti[1] = vv0 = vv1 = 0;
+}
+LCRYPTO_ALIAS(DES_ofb_encrypt);
 
-/* int size:  should always be > ~ 60; I actually ignore this parameter :-)    */
-int uufread(unsigned char *out, int size, unsigned int num, FILE *fp)
-	{
-	int i,j,tot;
-	static int done=0;
-	static int valid=0;
-	static int start=1;
+void
+DES_pcbc_encrypt(const unsigned char *input, unsigned char *output,
+    long length, DES_key_schedule *schedule,
+    DES_cblock *ivec, int enc)
+{
+	DES_LONG sin0, sin1, xor0, xor1, tout0, tout1;
+	DES_LONG tin[2];
+	const unsigned char *in;
+	unsigned char *out, *iv;
 
-	if (start)
-		{
-		for (;;)
-			{
-			b[0]='\0';
-			fgets((char *)b,300,fp);
-			if (b[0] == '\0')
-				{
-				fprintf(stderr,"no 'begin' found in uuencoded input\n");
-				return(-1);
-				}
-			if (strncmp((char *)b,"begin ",6) == 0) break;
-			}
-		start=0;
+	in = input;
+	out = output;
+	iv = &(*ivec)[0];
+
+	if (enc) {
+		c2l(iv, xor0);
+		c2l(iv, xor1);
+		for (; length > 0; length -= 8) {
+			if (length >= 8) {
+				c2l(in, sin0);
+				c2l(in, sin1);
+			} else
+				c2ln(in, sin0, sin1, length);
+			tin[0] = sin0 ^ xor0;
+			tin[1] = sin1 ^ xor1;
+			DES_encrypt1((DES_LONG *)tin, schedule, DES_ENCRYPT);
+			tout0 = tin[0];
+			tout1 = tin[1];
+			xor0 = sin0 ^ tout0;
+			xor1 = sin1 ^ tout1;
+			l2c(tout0, out);
+			l2c(tout1, out);
 		}
-	if (done) return(0);
-	tot=0;
-	if (valid)
-		{
-		memcpy(out,bb,(unsigned int)valid);
-		tot=valid;
-		valid=0;
+	} else {
+		c2l(iv, xor0);
+		c2l(iv, xor1);
+		for (; length > 0; length -= 8) {
+			c2l(in, sin0);
+			c2l(in, sin1);
+			tin[0] = sin0;
+			tin[1] = sin1;
+			DES_encrypt1((DES_LONG *)tin, schedule, DES_DECRYPT);
+			tout0 = tin[0] ^ xor0;
+			tout1 = tin[1] ^ xor1;
+			if (length >= 8) {
+				l2c(tout0, out);
+				l2c(tout1, out);
+			} else
+				l2cn(tout0, tout1, out, length);
+			xor0 = tout0 ^ sin0;
+			xor1 = tout1 ^ sin1;
 		}
-	for (;;)
-		{
-		b[0]='\0';
-		fgets((char *)b,300,fp);
-		if (b[0] == '\0') break;
-		i=strlen((char *)b);
-		if ((b[0] == 'e') && (b[1] == 'n') && (b[2] == 'd'))
-			{
-			done=1;
-			while (!feof(fp))
-				{
-				fgets((char *)b,300,fp);
-				}
-			break;
-			}
-		i=uudecode(b,i,bb);
-		if (i < 0) break;
-		if ((i+tot+8) > num)
-			{
-			/* num to copy to make it a multiple of 8 */
-			j=(num/8*8)-tot-8;
-			memcpy(&(out[tot]),bb,(unsigned int)j);
-			tot+=j;
-			memcpy(bb,&(bb[j]),(unsigned int)i-j);
-			valid=i-j;
-			break;
-			}
-		memcpy(&(out[tot]),bb,(unsigned int)i);
-		tot+=i;
-		}
-	return(tot);
 	}
+	tin[0] = tin[1] = 0;
+	sin0 = sin1 = xor0 = xor1 = tout0 = tout1 = 0;
+}
+LCRYPTO_ALIAS(DES_pcbc_encrypt);
 
-#define ccc2l(c,l)      (l =((DES_LONG)(*((c)++)))<<16, \
-			 l|=((DES_LONG)(*((c)++)))<< 8, \
-		 	 l|=((DES_LONG)(*((c)++))))
+/* RSA's DESX */
 
-#define l2ccc(l,c)      (*((c)++)=(unsigned char)(((l)>>16)&0xff), \
-                    *((c)++)=(unsigned char)(((l)>> 8)&0xff), \
-                    *((c)++)=(unsigned char)(((l)    )&0xff))
+void
+DES_xcbc_encrypt(const unsigned char *in, unsigned char *out,
+    long length, DES_key_schedule *schedule,
+    DES_cblock *ivec, const_DES_cblock *inw,
+    const_DES_cblock *outw, int enc)
+{
+	DES_LONG tin0, tin1;
+	DES_LONG tout0, tout1, xor0, xor1;
+	DES_LONG inW0, inW1, outW0, outW1;
+	const unsigned char *in2;
+	long l = length;
+	DES_LONG tin[2];
+	unsigned char *iv;
 
+	in2 = &(*inw)[0];
+	c2l(in2, inW0);
+	c2l(in2, inW1);
+	in2 = &(*outw)[0];
+	c2l(in2, outW0);
+	c2l(in2, outW1);
 
-int uuencode(unsigned char *in, int num, unsigned char *out)
-	{
-	int j,i,n,tot=0;
-	DES_LONG l;
-	register unsigned char *p;
-	p=out;
+	iv = &(*ivec)[0];
 
-	for (j=0; j<num; j+=45)
-		{
-		if (j+45 > num)
-			i=(num-j);
-		else	i=45;
-		*(p++)=i+' ';
-		for (n=0; n<i; n+=3)
-			{
-			ccc2l(in,l);
-			*(p++)=((l>>18)&0x3f)+' ';
-			*(p++)=((l>>12)&0x3f)+' ';
-			*(p++)=((l>> 6)&0x3f)+' ';
-			*(p++)=((l    )&0x3f)+' ';
-			tot+=4;
-			}
-		*(p++)='\n';
-		tot+=2;
+	if (enc) {
+		c2l(iv, tout0);
+		c2l(iv, tout1);
+		for (l -= 8; l >= 0; l -= 8) {
+			c2l(in, tin0);
+			c2l(in, tin1);
+			tin0 ^= tout0 ^ inW0;
+			tin[0] = tin0;
+			tin1 ^= tout1 ^ inW1;
+			tin[1] = tin1;
+			DES_encrypt1(tin, schedule, DES_ENCRYPT);
+			tout0 = tin[0] ^ outW0;
+			l2c(tout0, out);
+			tout1 = tin[1] ^ outW1;
+			l2c(tout1, out);
 		}
-	*p='\0';
-	l=0;
-	return(tot);
-	}
-
-int uudecode(unsigned char *in, int num, unsigned char *out)
-	{
-	int j,i,k;
-	unsigned int n=0,space=0;
-	DES_LONG l;
-	DES_LONG w,x,y,z;
-	unsigned int blank=(unsigned int)'\n'-' ';
-
-	for (j=0; j<num; )
-		{
-		n= *(in++)-' ';
-		if (n == blank)
-			{
-			n=0;
-			in--;
-			}
-		if (n > 60)
-			{
-			fprintf(stderr,"uuencoded line length too long\n");
-			return(-1);
-			}
-		j++;
-
-		for (i=0; i<n; j+=4,i+=3)
-			{
-			/* the following is for cases where spaces are
-			 * removed from lines.
-			 */
-			if (space)
-				{
-				w=x=y=z=0;
-				}
-			else
-				{
-				w= *(in++)-' ';
-				x= *(in++)-' ';
-				y= *(in++)-' ';
-				z= *(in++)-' ';
-				}
-			if ((w > 63) || (x > 63) || (y > 63) || (z > 63))
-				{
-				k=0;
-				if (w == blank) k=1;
-				if (x == blank) k=2;
-				if (y == blank) k=3;
-				if (z == blank) k=4;
-				space=1;
-				switch (k) {
-				case 1:	w=0; in--;
-				case 2: x=0; in--;
-				case 3: y=0; in--;
-				case 4: z=0; in--;
-					break;
-				case 0:
-					space=0;
-					fprintf(stderr,"bad uuencoded data values\n");
-					w=x=y=z=0;
-					return(-1);
-					break;
-					}
-				}
-			l=(w<<18)|(x<<12)|(y<< 6)|(z    );
-			l2ccc(l,out);
-			}
-		if (*(in++) != '\n')
-			{
-			fprintf(stderr,"missing nl in uuencoded line\n");
-			w=x=y=z=0;
-			return(-1);
-			}
-		j++;
+		if (l != -8) {
+			c2ln(in, tin0, tin1, l + 8);
+			tin0 ^= tout0 ^ inW0;
+			tin[0] = tin0;
+			tin1 ^= tout1 ^ inW1;
+			tin[1] = tin1;
+			DES_encrypt1(tin, schedule, DES_ENCRYPT);
+			tout0 = tin[0] ^ outW0;
+			l2c(tout0, out);
+			tout1 = tin[1] ^ outW1;
+			l2c(tout1, out);
 		}
-	*out='\0';
-	w=x=y=z=0;
-	return(n);
+		iv = &(*ivec)[0];
+		l2c(tout0, iv);
+		l2c(tout1, iv);
+	} else {
+		c2l(iv, xor0);
+		c2l(iv, xor1);
+		for (l -= 8; l > 0; l -= 8) {
+			c2l(in, tin0);
+			tin[0] = tin0 ^ outW0;
+			c2l(in, tin1);
+			tin[1] = tin1 ^ outW1;
+			DES_encrypt1(tin, schedule, DES_DECRYPT);
+			tout0 = tin[0] ^ xor0 ^ inW0;
+			tout1 = tin[1] ^ xor1 ^ inW1;
+			l2c(tout0, out);
+			l2c(tout1, out);
+			xor0 = tin0;
+			xor1 = tin1;
+		}
+		if (l != -8) {
+			c2l(in, tin0);
+			tin[0] = tin0 ^ outW0;
+			c2l(in, tin1);
+			tin[1] = tin1 ^ outW1;
+			DES_encrypt1(tin, schedule, DES_DECRYPT);
+			tout0 = tin[0] ^ xor0 ^ inW0;
+			tout1 = tin[1] ^ xor1 ^ inW1;
+			l2cn(tout0, tout1, out, l + 8);
+			xor0 = tin0;
+			xor1 = tin1;
+		}
+
+		iv = &(*ivec)[0];
+		l2c(xor0, iv);
+		l2c(xor1, iv);
 	}
+	tin0 = tin1 = tout0 = tout1 = xor0 = xor1 = 0;
+	inW0 = inW1 = outW0 = outW1 = 0;
+	tin[0] = tin[1] = 0;
+}
+LCRYPTO_ALIAS(DES_xcbc_encrypt);

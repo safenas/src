@@ -1,7 +1,7 @@
-#	from: @(#)Makefile	8.1 (Berkeley) 6/6/93
-#	$Id: Makefile,v 1.1.1.1 1995/10/18 08:46:05 deraadt Exp $
+#	$OpenBSD: Makefile,v 1.4 2010/01/04 17:50:39 deraadt Exp $
 
 PROG=	sed
 SRCS=	compile.c main.c misc.c process.c
+WARNINGS=yes
 
 .include <bsd.prog.mk>
