@@ -292,6 +292,8 @@ void	iwx_apm_config(struct iwx_softc *);
 int	iwx_apm_init(struct iwx_softc *);
 void	iwx_apm_stop(struct iwx_softc *);
 int	iwx_allow_mcast(struct iwx_softc *);
+int     iwx_send_beacon(struct iwx_softc *);
+int	iwx_hostap_stop(struct iwx_softc *);
 void	iwx_init_msix_hw(struct iwx_softc *);
 void	iwx_conf_msix_hw(struct iwx_softc *, int);
 int	iwx_clear_persistence_bit(struct iwx_softc *);
@@ -461,6 +463,9 @@ int	iwx_auth(struct iwx_softc *);
 int	iwx_deauth(struct iwx_softc *);
 int	iwx_run(struct iwx_softc *);
 int	iwx_run_stop(struct iwx_softc *);
+#ifndef IEEE80211_STA_ONLY
+int     iwx_hostap(struct iwx_softc *);
+#endif
 struct ieee80211_node *iwx_node_alloc(struct ieee80211com *);
 int	iwx_set_key(struct ieee80211com *, struct ieee80211_node *,
 	    struct ieee80211_key *);
@@ -7619,12 +7624,16 @@ iwx_mac_ctxt_cmd_common(struct iwx_softc *sc, struct iwx_node *in,
 	if (action == IWX_FW_CTXT_ACTION_REMOVE)
 		return;
 
-	if (ic->ic_opmode == IEEE80211_M_MONITOR)
-		cmd->mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
-	else if (ic->ic_opmode == IEEE80211_M_STA)
-		cmd->mac_type = htole32(IWX_FW_MAC_TYPE_BSS_STA);
-	else
-		panic("unsupported operating mode %d", ic->ic_opmode);
+       if (ic->ic_opmode == IEEE80211_M_MONITOR)
+               cmd->mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
+       else if (ic->ic_opmode == IEEE80211_M_STA)
+               cmd->mac_type = htole32(IWX_FW_MAC_TYPE_BSS_STA);
+#ifndef IEEE80211_STA_ONLY
+       else if (ic->ic_opmode == IEEE80211_M_HOSTAP)
+               cmd->mac_type = htole32(IWX_FW_MAC_TYPE_GO);
+#endif
+       else
+               panic("unsupported operating mode %d", ic->ic_opmode);
 	cmd->tsf_id = htole32(IWX_TSF_ID_A);
 
 	IEEE80211_ADDR_COPY(cmd->node_addr, ic->ic_myaddr);
@@ -7743,14 +7752,19 @@ iwx_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in, uint32_t action,
 		    sizeof(cmd), &cmd);
 	}
 
-	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
-		cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_PROMISC |
-		    IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
-		    IWX_MAC_FILTER_ACCEPT_GRP |
-		    IWX_MAC_FILTER_IN_BEACON |
-		    IWX_MAC_FILTER_IN_PROBE_REQUEST |
-		    IWX_MAC_FILTER_IN_CRC32);
-	} else if (!assoc || !ni->ni_associd || !ni->ni_dtimperiod) {
+       if (ic->ic_opmode == IEEE80211_M_MONITOR) {
+               cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_PROMISC |
+                   IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
+                   IWX_MAC_FILTER_ACCEPT_GRP |
+                   IWX_MAC_FILTER_IN_BEACON |
+                   IWX_MAC_FILTER_IN_PROBE_REQUEST |
+                   IWX_MAC_FILTER_IN_CRC32);
+#ifndef IEEE80211_STA_ONLY
+       } else if (ic->ic_opmode == IEEE80211_M_HOSTAP) {
+               cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
+                   IWX_MAC_FILTER_ACCEPT_GRP);
+#endif
+       } else if (!assoc || !ni->ni_associd || !ni->ni_dtimperiod) {
 		/*
 		 * Allow beacons to pass through as long as we are not
 		 * associated or we do not have dtim period information.
@@ -7779,23 +7793,32 @@ iwx_mld_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
 		    0, sizeof(cmd), &cmd);
 	}
 
-	if (ic->ic_opmode == IEEE80211_M_MONITOR)
-		cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
-	else if (ic->ic_opmode == IEEE80211_M_STA)
-		cmd.mac_type = htole32(IWX_FW_MAC_TYPE_BSS_STA);
-	else
-		panic("unsupported operating mode %d", ic->ic_opmode);
+       if (ic->ic_opmode == IEEE80211_M_MONITOR)
+               cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
+       else if (ic->ic_opmode == IEEE80211_M_STA)
+               cmd.mac_type = htole32(IWX_FW_MAC_TYPE_BSS_STA);
+#ifndef IEEE80211_STA_ONLY
+       else if (ic->ic_opmode == IEEE80211_M_HOSTAP)
+               cmd.mac_type = htole32(IWX_FW_MAC_TYPE_GO);
+#endif
+       else
+               panic("unsupported operating mode %d", ic->ic_opmode);
 	IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_myaddr);
 	cmd.client.assoc_id = htole32(ni->ni_associd);
 
-	cmd.filter_flags = htole32(IWX_MAC_CFG_FILTER_ACCEPT_GRP);
-	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
-		cmd.filter_flags |= htole32(IWX_MAC_CFG_FILTER_PROMISC |
-		    IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
-		    IWX_MAC_CFG_FILTER_ACCEPT_BEACON |
-		    IWX_MAC_CFG_FILTER_ACCEPT_PROBE_REQ |
-		    IWX_MAC_CFG_FILTER_ACCEPT_GRP);
-	} else if (!assoc || !ni->ni_associd || !ni->ni_dtimperiod) {
+       cmd.filter_flags = htole32(IWX_MAC_CFG_FILTER_ACCEPT_GRP);
+       if (ic->ic_opmode == IEEE80211_M_MONITOR) {
+               cmd.filter_flags |= htole32(IWX_MAC_CFG_FILTER_PROMISC |
+                   IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
+                   IWX_MAC_CFG_FILTER_ACCEPT_BEACON |
+                   IWX_MAC_CFG_FILTER_ACCEPT_PROBE_REQ |
+                   IWX_MAC_CFG_FILTER_ACCEPT_GRP);
+#ifndef IEEE80211_STA_ONLY
+       } else if (ic->ic_opmode == IEEE80211_M_HOSTAP) {
+               cmd.filter_flags |= htole32(IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
+                   IWX_MAC_CFG_FILTER_ACCEPT_GRP);
+#endif
+       } else if (!assoc || !ni->ni_associd || !ni->ni_dtimperiod) {
 		/*
 		 * Allow beacons to pass through as long as we are not
 		 * associated or we do not have dtim period information.
@@ -8753,6 +8776,84 @@ iwx_run_stop(struct iwx_softc *sc)
 	return 0;
 }
 
+#ifndef IEEE80211_STA_ONLY
+int
+iwx_hostap(struct iwx_softc *sc)
+{
+       struct ieee80211com *ic = &sc->sc_ic;
+       struct iwx_node *in = (void *)ic->ic_bss;
+       int err;
+
+       splassert(IPL_NET);
+
+       err = iwx_phy_ctxt_update(sc, &sc->sc_phyctxt[0],
+           ic->ic_ibss_chan, 1, 1, 0, IEEE80211_HTOP0_SCO_SCN,
+           IEEE80211_VHTOP0_CHAN_WIDTH_HT);
+       if (err)
+               return err;
+
+       in->in_phyctxt = &sc->sc_phyctxt[0];
+       IEEE80211_ADDR_COPY(in->in_macaddr, in->in_ni.ni_macaddr);
+
+       err = iwx_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_ADD, 1);
+       if (err) {
+               printf("%s: could not add MAC context (error %d)\n",
+                   DEVNAME(sc), err);
+               return err;
+       }
+       sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
+
+       err = iwx_enable_mgmt_queue(sc);
+       if (err)
+               goto rm_mac;
+
+       err = iwx_allow_mcast(sc);
+       if (err)
+               printf("%s: could not allow mcast (error %d)\n",
+                   DEVNAME(sc), err);
+
+       err = iwx_send_beacon(sc);
+       if (err)
+               printf("%s: could not transmit beacon (error %d)\n",
+                   DEVNAME(sc), err);
+
+       err = iwx_power_update_device(sc);
+       if (err)
+               printf("%s: could not send power command (error %d)\n",
+                   DEVNAME(sc), err);
+
+       return err;
+
+rm_mac:
+       iwx_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE, 0);
+       sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
+       return err;
+}
+
+int
+iwx_hostap_stop(struct iwx_softc *sc)
+{
+       struct ieee80211com *ic = &sc->sc_ic;
+       struct iwx_node *in = (void *)ic->ic_bss;
+       int err;
+
+       err = iwx_disable_mgmt_queue(sc);
+       if (err)
+               printf("%s: could not disable Tx queue %d (error %d)\n",
+                   DEVNAME(sc), sc->first_data_qid, err);
+
+       if (sc->sc_flags & IWX_FLAG_MAC_ACTIVE) {
+               err = iwx_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE, 0);
+               if (err)
+                       printf("%s: could not remove MAC context (error %d)\n",
+                           DEVNAME(sc), err);
+               sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
+       }
+
+       return err;
+}
+#endif
+
 struct ieee80211_node *
 iwx_node_alloc(struct ieee80211com *ic)
 {
@@ -9010,11 +9111,16 @@ iwx_newstate_task(void *psc)
 	}
 
 	if (nstate <= ostate) {
-		switch (ostate) {
-		case IEEE80211_S_RUN:
-			err = iwx_run_stop(sc);
-			if (err)
-				goto out;
+               switch (ostate) {
+               case IEEE80211_S_RUN:
+#ifndef IEEE80211_STA_ONLY
+                       if (ic->ic_opmode == IEEE80211_M_HOSTAP)
+                               err = iwx_hostap_stop(sc);
+                       else
+#endif
+                               err = iwx_run_stop(sc);
+                       if (err)
+                               goto out;
 			/* FALLTHROUGH */
 		case IEEE80211_S_ASSOC:
 		case IEEE80211_S_AUTH:
@@ -9057,9 +9163,14 @@ next_scan:
 	case IEEE80211_S_ASSOC:
 		break;
 
-	case IEEE80211_S_RUN:
-		err = iwx_run(sc);
-		break;
+       case IEEE80211_S_RUN:
+#ifndef IEEE80211_STA_ONLY
+               if (ic->ic_opmode == IEEE80211_M_HOSTAP)
+                       err = iwx_hostap(sc);
+               else
+#endif
+                       err = iwx_run(sc);
+               break;
 	}
 
 out:
@@ -9523,7 +9634,25 @@ iwx_allow_mcast(struct iwx_softc *sc)
 	    0, size, cmd);
 	free(cmd, M_DEVBUF, size);
 	return err;
+
+int
+iwx_send_beacon(struct iwx_softc *sc)
+{
+        struct ieee80211com *ic = &sc->sc_ic;
+        struct ieee80211_node *ni = ic->ic_bss;
+        struct mbuf *m;
+        int err;
+
+        m = ieee80211_beacon_alloc(ic, ni);
+        if (m == NULL)
+                return ENOBUFS;
+        m->m_pkthdr.ph_cookie = ni;
+        err = iwx_tx(sc, m, ni);
+        if (err)
+                m_freem(m);
+        return err;
 }
+
 
 int
 iwx_init(struct ifnet *ifp)
@@ -9563,11 +9692,19 @@ iwx_init(struct ifnet *ifp)
 	ifq_clr_oactive(&ifp->if_snd);
 	ifp->if_flags |= IFF_RUNNING;
 
-	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
-		ic->ic_bss->ni_chan = ic->ic_ibss_chan;
-		ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
-		return 0;
-	}
+       if (ic->ic_opmode == IEEE80211_M_MONITOR) {
+               ic->ic_bss->ni_chan = ic->ic_ibss_chan;
+               ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+               return 0;
+       }
+
+#ifndef IEEE80211_STA_ONLY
+       if (ic->ic_opmode == IEEE80211_M_HOSTAP) {
+               ic->ic_bss->ni_chan = ic->ic_ibss_chan;
+               ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+               return 0;
+       }
+#endif
 
 	ieee80211_begin_scan(ifp);
 
@@ -11685,6 +11822,9 @@ iwx_attach(struct device *parent, struct device *self, void *aux)
 	    IEEE80211_C_SCANALL |	/* device scans all channels at once */
 	    IEEE80211_C_SCANALLBAND |	/* device scans all bands at once */
 	    IEEE80211_C_MONITOR |	/* monitor mode supported */
+#ifndef IEEE80211_STA_ONLY
+            IEEE80211_C_HOSTAP |
+#endif
 	    IEEE80211_C_SHSLOT |	/* short slot time supported */
 	    IEEE80211_C_SHPREAMBLE;	/* short preamble supported */
 

@@ -659,14 +659,11 @@ struct iwx_softc {
 
 	/* Task for setting encryption keys and its arguments. */
 	struct task		setkey_task;
-	/*
-	 * At present we need to process at most two keys at once:
-	 * Our pairwise key and a group key.
-	 * When hostap mode is implemented this array needs to grow or
-	 * it might become a bottleneck for associations that occur at
-	 * roughly the same time.
-	 */
-	struct iwx_setkey_task_arg setkey_arg[2];
+       /*
+        * Allow up to eight key updates in flight so multiple stations can
+        * associate with the access point at the same time.
+        */
+       struct iwx_setkey_task_arg setkey_arg[8];
 	int setkey_cur;
 	int setkey_tail;
 	int setkey_nkeys;

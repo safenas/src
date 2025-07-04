@@ -39,6 +39,10 @@ Also known as
 mode, this is used when associating with an access point, through
 which all traffic passes.
 This mode is the default.
+.It hostap mode
+In this mode the
+.Nm
+device acts as an access point and other stations can associate with it.
 .It monitor mode
 In this mode the driver is able to receive packets without
 associating with an access point.
@@ -123,6 +127,15 @@ obtaining an IP address using DHCP:
 .Bd -literal -offset indent
 join mynwid wpakey mywpakey
 inet autoconf
+.Ed
+.Pp
+The following
+.Xr hostname.if 5
+example creates a host-based access point on boot:
+.Bd -literal -offset indent
+mediaopt hostap
+nwid mynwid wpakey mywpakey
+inet 192.168.1.1 255.255.255.0
 .Ed
 .Sh DIAGNOSTICS
 .Bl -diag
